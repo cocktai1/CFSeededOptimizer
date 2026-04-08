@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v7";
+const SCRIPT_VERSION = "2026-04-09.v8";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -537,9 +537,8 @@ function buildGeneratedPlugin(mappings) {
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
-        "#!author=@LoonMaster-Engine",
+        "#!author=cocktai1",
         "#!icon=https://img.icons8.com/fluency/96/refresh.png",
-        "#!system=ios",
         "",
         "[Host]",
         hostLines,

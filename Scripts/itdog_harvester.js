@@ -425,9 +425,8 @@ function buildGeneratedPlugin(bestIp, targets) {
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
-        "#!author=@LoonMaster-Engine",
+        "#!author=cocktai1",
         "#!icon=https://img.icons8.com/fluency/96/refresh.png",
-        "#!system=ios",
         "",
         "[Host]",
         hostLines,
