@@ -20,8 +20,9 @@ const SEED_DOMAINS_RAW = String(ARG.CF_SEED_DOMAINS || DEFAULT_SEED_DOMAINS.join
 const SEED_POOL_URL = String(ARG.CF_SEED_POOL_URL || "https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json").trim();
 const GITHUB_TOKEN = String(ARG.CF_TOKEN || "").trim();
 const GIST_ID = String(ARG.CF_GIST_ID || "").trim();
-const GIST_FILENAME = String(ARG.CF_GIST_FILE || "CF_HostMap.plugin").trim();
+const GIST_FILENAME_RAW = String(ARG.CF_GIST_FILE || "CF_HostMap").trim();
 const OUTPUT_MODE = String(ARG.CF_OUTPUT_MODE || "plugin").trim().toLowerCase();
+const GIST_FILENAME = normalizeGistFilename(GIST_FILENAME_RAW, OUTPUT_MODE);
 const REQUEST_TIMEOUT = 6000;
 const MAX_SEED_DOMAINS = Math.min(24, Math.max(6, Number.parseInt(String(ARG.CF_MAX_SEED_DOMAINS || "12"), 10) || 12));
 const CANDIDATE_LIMIT = Math.min(120, Math.max(10, Number.parseInt(String(ARG.CF_CANDIDATE_LIMIT || "40"), 10) || 40));
@@ -65,6 +66,15 @@ function parseDomainList(rawValue) {
             .map(item => normalizeDomainToken(item))
             .filter(Boolean)
     ));
+}
+
+function normalizeGistFilename(rawName, outputMode) {
+    const fallback = "CF_HostMap";
+    const safeName = String(rawName || "").trim() || fallback;
+    if (String(outputMode || "").toLowerCase() === "plugin" && safeName.toLowerCase().endsWith(".plugin")) {
+        return safeName.slice(0, -7) || fallback;
+    }
+    return safeName;
 }
 
 function normalizeDomainToken(rawDomain) {
@@ -411,6 +421,7 @@ function buildPluginSnippet(bestIp, targets) {
     const lines = targets.map(domainName => `${domainName} = ${bestIp}`);
     return [
         "[Host]",
+        "use-in-proxy=true",
         ...lines,
         ""
     ].join("\n");
@@ -429,6 +440,7 @@ function buildGeneratedPlugin(bestIp, targets) {
         "#!icon=https://img.icons8.com/fluency/96/refresh.png",
         "",
         "[Host]",
+        "use-in-proxy=true",
         hostLines,
         ""
     ].join("\n");
