@@ -7,26 +7,206 @@
 #!icon=https://img.icons8.com/fluency/96/cloud-download.png
 
 [Argument]
-# 无需配置参数 - 使用脚本内置的三梯队默认种子
 
 [Script]
-# 本插件支持以下触发方式（都不自动执行，完全手动控制）
-# 方式1: Loon 主页长按插件图标 → 运行脚本
-# 方式2: 通知栏点击"运行"按钮（如已开启消息通知）
-# 方式3: 通过远程脚本 URL 手动调用
-#
-# 执行流程：
-# 1. 按顺序查询每个种子域名到 ITDog API
-# 2. 提取 CF IP 地址（过滤 15 条 CF CIDR 范围）
-# 3. 去重聚合，生成 seed_pool.json 格式
-# 4. 输出 JSON 到控制台（供复制）
-# 5. 存储到 Loon 本地缓存（用于后续导入）
-#
-# 推送方式选择：
-# 选项 A: 复制输出的 JSON → 创建/编辑 GitHub Gist → json_data.json
-# 选项 B: 复制输出的 JSON → 本地转发到 Git，执行 data/seed_pool.json 提交
-# 选项 C: 直接使用本地缓存（不推送）作为后备种子池
+const CF_IPV4_CIDRS = [
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "108.162.192.0/18",
+    "131.0.72.0/22",
+    "141.101.64.0/18",
+    "162.158.0.0/15",
+    "172.64.0.0/13",
+    "173.245.48.0/20",
+    "188.114.96.0/20",
+    "190.93.240.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+];
 
-https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/itdog_harvester.js
+const DEFAULT_SEED_DOMAIN_GROUPS = {
+    tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
+    tier2: ["www.cloudflare.com", "developers.cloudflare.com", "workers.cloudflare.com", "one.one.one.one"],
+    tier3: ["shopee.sg", "shopee.tw", "icook.tw", "www.digitalocean.com", "cloudflare.steamstatic.com"],
+};
+const DEFAULT_SEED_DOMAINS = [
+    ...DEFAULT_SEED_DOMAIN_GROUPS.tier1,
+    ...DEFAULT_SEED_DOMAIN_GROUPS.tier2,
+    ...DEFAULT_SEED_DOMAIN_GROUPS.tier3,
+];
+
+const ITDOG_API_BASE = "https://www.itdog.cn";
+const REQUEST_TIMEOUT = 5000;
+const MAX_SEED_DOMAINS = 12;
+const MAX_IPS = 80;
+
+let totalResults = {
+    seed_domains: DEFAULT_SEED_DOMAINS,
+    valid_seed_domains: [],
+    invalid_seed_domains: [],
+    ips: [],
+    updated_at: Math.floor(Date.now() / 1000),
+    source: "loon-itdog-harvester",
+    extended: {
+        strategies: ["itdog"],
+        harvest_method: "local_scraping",
+    },
+};
+
+function ipToInt(ipStr) {
+    const parts = ipStr.split(".").map(Number);
+    return (parts[0] << 24) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+}
+
+function isInCIDR(ip, cidrStr) {
+    const [cidr, maskBits] = cidrStr.split("/");
+    const cidrInt = ipToInt(cidr);
+    const mask = (0xffffffff << (32 - maskBits)) >>> 0;
+    return (ipToInt(ip) & mask) === (cidrInt & mask);
+}
+
+function isCloudflareIP(ip) {
+    return CF_IPV4_CIDRS.some((cidr) => isInCIDR(ip, cidr));
+}
+
+function parseIPsFromJSON(jsonData) {
+    const ips = [];
+    if (!jsonData) return ips;
+
+    try {
+        const data = typeof jsonData === "string" ? JSON.parse(jsonData) : jsonData;
+        if (Array.isArray(data)) {
+            for (const item of data) {
+                if (typeof item === "string") {
+                    ips.push(item);
+                } else if (typeof item === "object" && item.ip) {
+                    ips.push(item.ip);
+                } else if (typeof item === "object" && item.address) {
+                    ips.push(item.address);
+                }
+            }
+        } else if (typeof data === "object") {
+            if (data.data && Array.isArray(data.data)) {
+                for (const item of data.data) {
+                    if (typeof item === "string") {
+                        ips.push(item);
+                    } else if (item.ip) {
+                        ips.push(item.ip);
+                    } else if (item.address) {
+                        ips.push(item.address);
+                    }
+                }
+            } else if (Array.isArray(data.ips)) {
+                ips.push(...data.ips);
+            } else if (data.ip) {
+                ips.push(data.ip);
+            }
+        }
+    } catch (e) {
+        console.log(`❌ JSON parse error: ${e.message}`);
+    }
+
+    return ips;
+}
+
+function queryITDogAPI(domain) {
+    return new Promise((resolve) => {
+        const url = `${ITDOG_API_BASE}/api/lookup?domain=${encodeURIComponent(domain)}`;
+
+        $httpClient.get(
+            {
+                url: url,
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+                    Accept: "application/json, text/plain, */*",
+                },
+                timeout: REQUEST_TIMEOUT,
+            },
+            function (error, response, body) {
+                if (error) {
+                    console.log(`⚠️ ITDog API failed for ${domain}: ${error}`);
+                    resolve([]);
+                } else {
+                    const ips = parseIPsFromJSON(body);
+                    console.log(`✓ ITDog API for ${domain}: ${ips.length} IPs`);
+                    resolve(ips);
+                }
+            }
+        );
+    });
+}
+
+async function harvestFromDomain(domain) {
+    try {
+        const ips = await queryITDogAPI(domain);
+        const cfIps = ips.filter(isCloudflareIP);
+
+        if (cfIps.length > 0) {
+            totalResults.valid_seed_domains.push(domain);
+            totalResults.ips.push(...cfIps);
+            console.log(`  → Found ${cfIps.length} CF IPs`);
+        } else {
+            totalResults.invalid_seed_domains.push(domain);
+            console.log(`  → No CF IPs found`);
+        }
+    } catch (e) {
+        totalResults.invalid_seed_domains.push(domain);
+        console.log(`  → Error: ${e.message}`);
+    }
+}
+
+async function harvestAll() {
+    console.log(`🚀 Starting ITDog harvest for ${totalResults.seed_domains.length} seed domains...`);
+
+    for (let i = 0; i < Math.min(totalResults.seed_domains.length, MAX_SEED_DOMAINS); i++) {
+        const domain = totalResults.seed_domains[i];
+        console.log(`\n[${i + 1}/${totalResults.seed_domains.length}] Querying: ${domain}`);
+        await harvestFromDomain(domain);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    const uniqueIPs = [];
+    const seen = new Set();
+    for (const ip of totalResults.ips) {
+        if (!seen.has(ip)) {
+            uniqueIPs.push(ip);
+            seen.add(ip);
+        }
+    }
+    totalResults.ips = uniqueIPs.slice(0, MAX_IPS);
+
+    console.log(`\n✅ Harvest complete:`);
+    console.log(`  📊 Seed domains: ${totalResults.seed_domains.length}`);
+    console.log(`  ✓ Valid: ${totalResults.valid_seed_domains.length}`);
+    console.log(`  ✗ Invalid: ${totalResults.invalid_seed_domains.length}`);
+    console.log(`  🔗 Unique IPs: ${totalResults.ips.length}`);
+    console.log(`  📅 Updated: ${new Date(totalResults.updated_at * 1000).toISOString()}`);
+
+    const outputJson = JSON.stringify(totalResults, null, 2);
+    console.log(`\n📋 seed_pool.json content:\n${outputJson}\n`);
+
+    $persistentStore.write(
+        JSON.stringify(totalResults),
+        "CF_ITDOG_HARVEST_RESULT"
+    );
+
+    console.log(`📋 Ready to push to GitHub Gist or commit to data/seed_pool.json`);
+    console.log(`💡 Hint: Use 'Copy as JSON' above, then paste to Gist or commit to repo`);
+
+    $notification.post({
+        title: "✅ CF ITDog 采集完成",
+        message: `成功: ${totalResults.valid_seed_domains.length} | IP 池: ${totalResults.ips.length}`,
+        sound: "default",
+    });
+}
+
+console.log("🔄 CF ITDog Harvester initialized");
+harvestAll().then(() => {
+    console.log("🏁 Done");
+    $done();
+});
 
 [MITM]
