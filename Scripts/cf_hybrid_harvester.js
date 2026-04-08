@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v12";
+const SCRIPT_VERSION = "2026-04-09.v13";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -474,20 +474,32 @@ async function verifyIpAccessibleForDomain(ipAddress, domainName, strictMode) {
 async function verifyEdgeRestrictionOnRoot(ipAddress, domainName) {
     const url = `http://${ipAddress}/`;
     const headers = { "Host": domainName, "User-Agent": "Loon-CF-Hybrid" };
-    return new Promise(resolve => {
+    const singleCheck = () => new Promise(resolve => {
         $httpClient.get({ url, headers, timeout: Math.max(2000, Math.min(5000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
             if (err || !resp) {
-                resolve({ blocked: false, reason: "network_error" });
+                resolve({ blocked: true, reason: "network_error_root" });
                 return;
             }
+            const status = Number(resp.status || 0);
             const text = String(typeof data === "string" ? data : "").toLowerCase();
             if (text.includes("error 1034") || text.includes("edge ip restricted")) {
                 resolve({ blocked: true, reason: "edge_ip_restricted_1034_root" });
                 return;
             }
+            if (status >= 400) {
+                resolve({ blocked: true, reason: `http_${status}_root` });
+                return;
+            }
             resolve({ blocked: false, reason: "ok" });
         });
     });
+
+    const first = await singleCheck();
+    if (!first.blocked || first.reason === "edge_ip_restricted_1034_root") return first;
+
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const second = await singleCheck();
+    return second;
 }
 
 async function verifyIpAccessibleForDomains(ipAddress, domains) {
