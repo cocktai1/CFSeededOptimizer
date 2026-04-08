@@ -75,6 +75,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install optional dependencies for location-aware harvesting
+        if: github.event.inputs.enable_location_aware == 'true'
+        run: |
+          pip install requests
+
       - name: Harvest Cloudflare seed pool
         env:
           CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS || 'time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com' }}
