@@ -22,7 +22,6 @@ const GITHUB_TOKEN = String(ARG.CF_TOKEN || "").trim();
 const GIST_ID = String(ARG.CF_GIST_ID || "").trim();
 const GIST_FILENAME = String(ARG.CF_GIST_FILE || "CF_HostMap.plugin").trim();
 const OUTPUT_MODE = String(ARG.CF_OUTPUT_MODE || "plugin").trim().toLowerCase();
-const ITDOG_API_BASE = "https://www.itdog.cn";
 const REQUEST_TIMEOUT = 6000;
 const MAX_SEED_DOMAINS = Math.min(24, Math.max(6, Number.parseInt(String(ARG.CF_MAX_SEED_DOMAINS || "12"), 10) || 12));
 const CANDIDATE_LIMIT = Math.min(120, Math.max(10, Number.parseInt(String(ARG.CF_CANDIDATE_LIMIT || "40"), 10) || 40));
@@ -34,7 +33,7 @@ const PROBE_PATH = String(ARG.CF_PROBE_PATH || "/system/info/public,/web/index.h
 const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10) || 6000;
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
 
-const STORE_RESULT_KEY = "CF_ITDOG_HARVEST_RESULT";
+const STORE_RESULT_KEY = "CF_HYBRID_HARVEST_RESULT";
 const STORE_BEST_KEY = "CF_LOCAL_BEST_IP_RESULT";
 
 const CF_IPV4_CIDRS = [
@@ -243,26 +242,10 @@ async function collectLocalSeedIPs(seedDomains) {
     const validSeedDomains = [];
     const invalidSeedDomains = [];
     const ips = [];
-    let itdogSuccess = 0;
-    let itdogBlocked = 0;
-    let dohFallbackHits = 0;
 
     for (const domainName of seedDomains) {
-        let sourceIps = [];
-        let sourceName = "itdog";
-
-        const itdogResult = await queryITDogAPI(domainName);
-        if (itdogResult.ok) {
-            itdogSuccess += 1;
-            sourceIps = itdogResult.ips;
-        } else {
-            itdogBlocked += 1;
-            sourceName = "doh_fallback";
-            sourceIps = await fetchDoHARecords(domainName);
-            if (sourceIps.length > 0) {
-                dohFallbackHits += 1;
-            }
-        }
+        const sourceIps = await fetchDoHARecords(domainName);
+        const sourceName = "local_dns";
 
         const cfIps = uniqueIPv4List(sourceIps.filter(isCloudflareIPv4));
         if (cfIps.length > 0) {
@@ -282,38 +265,11 @@ async function collectLocalSeedIPs(seedDomains) {
         invalidSeedDomains,
         ips: uniqueIPv4List(ips).slice(0, MAX_IPS),
         stats: {
-            itdogSuccess,
-            itdogBlocked,
-            dohFallbackHits
+            localDnsQueries: seedDomains.length,
+            localDnsHits: validSeedDomains.length,
+            localDnsMisses: invalidSeedDomains.length
         }
     };
-}
-
-async function queryITDogAPI(domainName) {
-    const url = `${ITDOG_API_BASE}/api/lookup?domain=${encodeURIComponent(domainName)}`;
-    return new Promise(resolve => {
-        $httpClient.get(
-            { url, timeout: 3500, node: "DIRECT" },
-            (err, resp, data) => {
-                if (err || !resp || !data) {
-                    resolve({ ok: false, ips: [], source: "error" });
-                    return;
-                }
-                const bodyText = String(data);
-                if (bodyText.includes("<html") || bodyText.includes("403") || bodyText.includes("Access Denied")) {
-                    resolve({ ok: false, ips: [], source: "blocked" });
-                    return;
-                }
-                try {
-                    const payload = JSON.parse(bodyText);
-                    const ips = parseIPsFromAnyJSON(payload);
-                    resolve({ ok: ips.length > 0, ips, source: "itdog" });
-                } catch (error) {
-                    resolve({ ok: false, ips: [], source: "parse_error" });
-                }
-            }
-        );
-    });
 }
 
 async function runSingleProbe(ipAddress, hostName, pathName) {
@@ -518,7 +474,7 @@ async function main() {
 
     const localSeedResult = await collectLocalSeedIPs(seedDomains);
     console.log(`📱 本地采集: 有效=${localSeedResult.validSeedDomains.length} 无效=${localSeedResult.invalidSeedDomains.length} IP=${localSeedResult.ips.length}`);
-    console.log(`📊 ITDog状态: 成功=${localSeedResult.stats.itdogSuccess} 被拦截=${localSeedResult.stats.itdogBlocked} DoH回退命中=${localSeedResult.stats.dohFallbackHits}`);
+    console.log(`📊 本地DNS状态: 查询=${localSeedResult.stats.localDnsQueries} 命中=${localSeedResult.stats.localDnsHits} 未命中=${localSeedResult.stats.localDnsMisses}`);
 
     const targetDnsIps = [];
     const validTargetDomains = [];
@@ -615,7 +571,7 @@ async function main() {
         updated_at: Math.floor(Date.now() / 1000),
         source: "loon-hybrid-harvester",
         extended: {
-            strategies: ["cloud_seed_pool", "itdog_or_doh", "local_benchmark"],
+            strategies: ["cloud_seed_pool", "local_dns", "local_benchmark"],
             harvest_method: "hybrid_cloud_local",
             target_domains: targetDomains,
             valid_target_domains: validTargetDomains,
