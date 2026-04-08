@@ -300,6 +300,21 @@ async function runProbe(ipAddress, hostName) {
     }, null);
 }
 
+function ping(ipAddress, hostName) {
+    return new Promise(resolve => {
+        const startedAt = Date.now();
+        const url = `http://${ipAddress}/cdn-cgi/trace`;
+        const headers = { "Host": hostName, "User-Agent": "Loon-CF-Hybrid" };
+        $httpClient.get({ url, headers, timeout: Math.max(1500, Math.min(4000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp) => {
+            if (err || !resp || Number(resp.status || 0) >= 500) {
+                resolve({ ip: ipAddress, delay: 9999 });
+                return;
+            }
+            resolve({ ip: ipAddress, delay: Date.now() - startedAt });
+        });
+    });
+}
+
 async function samplePing(ipAddress, hostName) {
     const tasks = [];
     for (let index = 0; index < PING_SAMPLES; index += 1) {
