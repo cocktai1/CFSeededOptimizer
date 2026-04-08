@@ -1,0 +1,47 @@
+#!name=CF Seeded Optimizer
+#!desc=种子域名喂候选池 + 目标域名最终优选 + 域名变更自动清理。支持逗号/换行输入多个域名，适合手机端低打扰运行。
+#!author=@Lee
+#!loon_version=3.2.1(733)
+#!icon=https://img.icons8.com/fluency/96/radar.png
+
+[Argument]
+CF_TOKEN = input,"",tag=GitHub Token,desc=必填：用于更新 Gist 的 Token
+CF_GIST_ID = input,"",tag=Gist ID,desc=必填：用于写入映射文件
+CF_GIST_FILE = input,"CF_Seeded_HostMap.plugin",tag=Gist文件名,desc=同一 Gist 内的映射文件名
+CF_SEED_DOMAINS = input,"www.cloudflare.com\ndevelopers.cloudflare.com\nworkers.cloudflare.com\nblog.cloudflare.com\none.one.one.one\ncloudflarestatus.com\ncdnjs.cloudflare.com",tag=CF种子域名,desc=支持英文逗号或换行分隔多个稳定 CF 域名
+CF_TARGET_DOMAINS = input,"oklink00.leecloud.qzz.io\nemby-link00.camilacatlina2.workers.dev",tag=目标域名,desc=你的反代加速域名，支持英文逗号或换行分隔
+CF_MAX_SEED_DOMAINS = input,"12",tag=种子域名上限,desc=参与采样的种子域名数量上限
+CF_CANDIDATE_LIMIT = input,"30",tag=候选IP上限,desc=最终参与优选的候选 IP 数量
+CF_SEED_POOL_LIMIT = input,"80",tag=种子池上限,desc=从种子域名收集的候选 IP 上限
+CF_FALLBACK_TARGET_LIMIT = input,"6",tag=兜底候选数,desc=目标域名自身解析参与兜底的 IP 数量
+CF_SEED_REFRESH_MINUTES = input,"720",tag=种子刷新间隔(分钟),desc=种子池缓存多久刷新一次
+CF_MIN_VALID_SEED_DOMAINS = input,"2",tag=最低有效种子数,desc=少于该数量时仍会尝试补充目标域名兜底
+CF_MIN_IMPROVEMENT = input,"100",tag=切换阈值(ms),desc=优选IP需至少快于当前IP的毫秒数
+CF_STICKY_MS = input,"220",tag=粘滞阈值(ms),desc=当前IP低于该延迟时保持不切换
+CF_MIN_SWITCH_MINUTES = input,"480",tag=最小切换间隔(分钟),desc=避免频繁切换，默认8小时
+CF_EVAL_ROUNDS = input,"4",tag=评估轮数,desc=单次任务内重复测速轮数
+CF_PING_SAMPLES = input,"5",tag=测速采样次数,desc=每个IP的采样次数，建议4-6
+CF_JITTER_WEIGHT = input,"0.9",tag=抖动权重,desc=评分中抖动系数，值越高越重视稳定
+CF_REQUIRE_BEAT_DNS = input,"on",tag=需显著优于DNS,desc=on/off：仅当候选IP显著优于DNS结果时才固化映射
+CF_DNS_MARGIN_MS = input,"80",tag=优于DNS阈值(ms),desc=候选IP需至少快于DNS最佳该值才切换
+CF_MAX_ACCEPT_DELAY = input,"650",tag=最大可接受延迟(ms),desc=超过该延迟视为不适合固化映射
+CF_PROBE_PATH = input,"",tag=业务探针路径,desc=可选：如 /emby/items/...，用于更贴近真实业务测速
+CF_PROBE_TIMEOUT = input,"6000",tag=探针超时(ms),desc=业务探针请求超时
+CF_MIN_PROBE_KBPS = input,"250",tag=探针最低速率(KB/s),desc=启用探针时低于该速率不固化映射
+CF_BAD_RUN_PAUSE_MINUTES = input,"20",tag=劣化退避(分钟),desc=连续劣化时暂停切换，减少反复抖动
+CF_USE_IN_PROXY = input,"on",tag=代理中启用映射,desc=on/off：对应 use-in-proxy=true
+CF_OUTPUT_MODE = input,"plugin",tag=输出模式,desc=plugin/host：推荐plugin便于可视化排障
+CF_GENERATED_ICON = input,"https://img.icons8.com/fluency/96/synchronize.png",tag=生成插件图标,desc=自动生成的 CF Seeded HostMap Sync 图标
+CF_LOW_NOISE_MODE = input,"on",tag=低打扰模式,desc=on/off：通知去重与冷却，减少重复提醒
+CF_NOTIFY_COOLDOWN_MINUTES = input,"180",tag=通知冷却(分钟),desc=低打扰模式下相同映射提醒冷却时间
+CF_AUTO_REFRESH_SUB = input,"on",tag=更新后刷新提醒,desc=on/off：优选成功后推送一键刷新订阅通知
+
+[Script]
+# 种子池刷新
+cron "15 */12 * * *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seed_harvest.js, tag=CF种子池刷新, argument=[{CF_SEED_DOMAINS},{CF_SEED_POOL_LIMIT},{CF_MAX_SEED_DOMAINS}]
+
+# 定时优选
+cron "15 * * * *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seeded_optimize.js, tag=CF种子优选, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_GENERATED_ICON},{CF_OUTPUT_MODE},{CF_USE_IN_PROXY},{CF_LOW_NOISE_MODE},{CF_AUTO_REFRESH_SUB},{CF_SEED_DOMAINS},{CF_TARGET_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_FALLBACK_TARGET_LIMIT},{CF_SEED_REFRESH_MINUTES},{CF_MIN_VALID_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_MIN_IMPROVEMENT},{CF_STICKY_MS},{CF_MIN_SWITCH_MINUTES},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_REQUIRE_BEAT_DNS},{CF_DNS_MARGIN_MS},{CF_MAX_ACCEPT_DELAY},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_BAD_RUN_PAUSE_MINUTES},{CF_NOTIFY_COOLDOWN_MINUTES}]
+
+# 网络切换重测
+network-changed script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seeded_optimize.js, tag=CF种子重测, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_GENERATED_ICON},{CF_OUTPUT_MODE},{CF_USE_IN_PROXY},{CF_LOW_NOISE_MODE},{CF_AUTO_REFRESH_SUB},{CF_SEED_DOMAINS},{CF_TARGET_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_FALLBACK_TARGET_LIMIT},{CF_SEED_REFRESH_MINUTES},{CF_MIN_VALID_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_MIN_IMPROVEMENT},{CF_STICKY_MS},{CF_MIN_SWITCH_MINUTES},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_REQUIRE_BEAT_DNS},{CF_DNS_MARGIN_MS},{CF_MAX_ACCEPT_DELAY},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_BAD_RUN_PAUSE_MINUTES},{CF_NOTIFY_COOLDOWN_MINUTES}]

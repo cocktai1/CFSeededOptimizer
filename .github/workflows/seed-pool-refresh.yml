@@ -1,0 +1,42 @@
+name: CF Seed Pool Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 */12 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Harvest Cloudflare seed pool
+        env:
+          CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS }}
+          CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS }}
+          CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT }}
+          CF_OUTPUT_FILE: data/seed_pool.json
+        run: |
+          python tools/seed_pool_harvest.py
+
+      - name: Commit refreshed seed pool
+        run: |
+          if git diff --quiet -- data/seed_pool.json; then
+            echo "No seed pool changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/seed_pool.json
+          git commit -m "chore: refresh CF seed pool"
+          git push
