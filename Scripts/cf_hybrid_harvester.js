@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v9";
+const SCRIPT_VERSION = "2026-04-09.v10";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -845,9 +845,19 @@ async function main() {
         }
 
         const options = [];
-        if (hybridBest) options.push({ source: "hybrid_pool", row: hybridBest });
-        if (dnsBaseline) options.push({ source: "dns_baseline", row: dnsBaseline });
-        if (hostmapBaseline) options.push({ source: "current_hostmap", row: hostmapBaseline });
+        const seenOptionIps = new Set();
+        const pushOption = (source, row) => {
+            const ipAddress = row && row.ip ? String(row.ip) : "";
+            if (!ipAddress || seenOptionIps.has(ipAddress)) return;
+            seenOptionIps.add(ipAddress);
+            options.push({ source, row });
+        };
+
+        rows.slice(0, 8).forEach((row, idx) => {
+            pushOption(idx === 0 ? "hybrid_pool" : `hybrid_pool_rank_${idx + 1}`, row);
+        });
+        if (dnsBaseline) pushOption("dns_baseline", dnsBaseline);
+        if (hostmapBaseline) pushOption("current_hostmap", hostmapBaseline);
         options.sort((a, b) => a.row.score - b.row.score);
 
         let selected = null;

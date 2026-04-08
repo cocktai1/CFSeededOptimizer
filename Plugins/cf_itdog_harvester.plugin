@@ -34,7 +34,7 @@ CF_ACCESS_CHECK_PATHS = input,"/cdn-cgi/trace,/",tag=验活路径,desc=可配置
 # 手动脚本：在 Loon 主页长按插件图标 → 运行脚本 执行
 # 使用 cron "0 0 31 2 *"（二月31号）确保自动触发永不发生
 # Loon UI 自动识别该脚本为可手动执行
-cron "0 0 31 2 *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_hybrid_harvester.js?v=20260409v9, tag=CF混合优选采集, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_OUTPUT_MODE},{CF_TARGET_DOMAINS},{CF_EXTRA_DOMAINS},{CF_SEED_POOL_URL},{CF_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_EVAL_ROUNDS},{CF_EVAL_CONCURRENCY},{CF_DNS_CONCURRENCY},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_STRICT_ACCESS_MODE},{CF_ON_FAIL_STRATEGY},{CF_ACCESS_CHECK_PATHS}]
+cron "0 0 31 2 *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_hybrid_harvester.js?v=20260409v10, tag=CF混合优选采集, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_OUTPUT_MODE},{CF_TARGET_DOMAINS},{CF_EXTRA_DOMAINS},{CF_SEED_POOL_URL},{CF_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_EVAL_ROUNDS},{CF_EVAL_CONCURRENCY},{CF_DNS_CONCURRENCY},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_STRICT_ACCESS_MODE},{CF_ON_FAIL_STRATEGY},{CF_ACCESS_CHECK_PATHS}]
 
 [MITM]
 
