@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v10";
+const SCRIPT_VERSION = "2026-04-09.v11";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -25,6 +25,7 @@ const GIST_ID = String(ARG.CF_GIST_ID || "").trim();
 const GIST_FILENAME_RAW = String(ARG.CF_GIST_FILE || "CF_HostMap").trim();
 const OUTPUT_MODE = String(ARG.CF_OUTPUT_MODE || "plugin").trim().toLowerCase();
 const GIST_FILENAME = normalizeGistFilename(GIST_FILENAME_RAW, OUTPUT_MODE);
+const GIST_FILENAME_CANDIDATES = buildGistFilenameCandidates(GIST_FILENAME_RAW, OUTPUT_MODE, GIST_FILENAME);
 const REQUEST_TIMEOUT = 6000;
 const MAX_SEED_DOMAINS = Math.min(24, Math.max(6, Number.parseInt(String(ARG.CF_MAX_SEED_DOMAINS || "12"), 10) || 12));
 const CANDIDATE_LIMIT = Math.min(120, Math.max(10, Number.parseInt(String(ARG.CF_CANDIDATE_LIMIT || "40"), 10) || 40));
@@ -39,7 +40,7 @@ const EVAL_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_E
 const DNS_QUERY_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_DNS_CONCURRENCY || "4"), 10) || 4));
 const STRICT_ACCESS_MODE = String(ARG.CF_STRICT_ACCESS_MODE || "on").trim().toLowerCase();
 const ON_FAIL_STRATEGY = String(ARG.CF_ON_FAIL_STRATEGY || "keep_current").trim().toLowerCase();
-const ACCESS_CHECK_PATHS_RAW = String(ARG.CF_ACCESS_CHECK_PATHS || "/cdn-cgi/trace,/").trim();
+const ACCESS_CHECK_PATHS_RAW = String(ARG.CF_ACCESS_CHECK_PATHS || "/cdn-cgi/trace").trim();
 
 const STORE_RESULT_KEY = "CF_HYBRID_HARVEST_RESULT";
 const STORE_BEST_KEY = "CF_LOCAL_BEST_IP_RESULT";
@@ -102,6 +103,29 @@ function normalizeGistFilename(rawName, outputMode) {
         return safeName.slice(0, -7) || fallback;
     }
     return safeName;
+}
+
+function buildGistFilenameCandidates(rawName, outputMode, normalizedName) {
+    const names = new Set();
+    const raw = String(rawName || "").trim();
+    const normalized = String(normalizedName || "").trim();
+
+    if (normalized) names.add(normalized);
+    if (raw) names.add(raw);
+
+    if (String(outputMode || "").toLowerCase() === "plugin") {
+        if (raw && raw.toLowerCase().endsWith(".plugin")) {
+            names.add(raw.slice(0, -7));
+        } else if (raw) {
+            names.add(`${raw}.plugin`);
+        }
+
+        if (normalized && !normalized.toLowerCase().endsWith(".plugin")) {
+            names.add(`${normalized}.plugin`);
+        }
+    }
+
+    return [...names].filter(Boolean);
 }
 
 function normalizeDomainToken(rawDomain) {
@@ -229,7 +253,7 @@ function normalizeProbePathList(value) {
 
 function normalizeAccessCheckPaths(value) {
     const paths = normalizeProbePathList(value);
-    return paths.length ? paths : ["/cdn-cgi/trace", "/"];
+    return paths.length ? paths : ["/cdn-cgi/trace"];
 }
 
 function responseLooksBlocked(statusCode, bodyText, strictMode) {
@@ -416,6 +440,7 @@ function ping(ipAddress, hostName) {
 
 async function verifyIpAccessibleForDomain(ipAddress, domainName, strictMode) {
     const checks = normalizeAccessCheckPaths(ACCESS_CHECK_PATHS_RAW);
+    let lastFailure = { ok: false, reason: "network_error" };
     for (const pathName of checks) {
         const url = `http://${ipAddress}${pathName}`;
         const headers = { "Host": domainName, "User-Agent": "Loon-CF-Hybrid" };
@@ -439,9 +464,11 @@ async function verifyIpAccessibleForDomain(ipAddress, domainName, strictMode) {
                 resolve({ ok: true, reason: "ok" });
             });
         });
-        if (!result.ok) return result;
+        if (result.ok) return result;
+        lastFailure = result;
+        if (result.reason === "edge_ip_restricted_1034") return result;
     }
-    return { ok: true, reason: "ok" };
+    return lastFailure;
 }
 
 async function verifyIpAccessibleForDomains(ipAddress, domains) {
@@ -645,9 +672,20 @@ async function fetchCurrentGistHostMap() {
                 try {
                     const json = JSON.parse(data);
                     const files = json && json.files ? json.files : {};
-                    const fileNode = files[GIST_FILENAME];
-                    const content = fileNode && typeof fileNode.content === "string" ? fileNode.content : "";
-                    resolve(parseHostMapContent(content));
+                    for (const fileName of GIST_FILENAME_CANDIDATES) {
+                        const fileNode = files[fileName];
+                        const content = fileNode && typeof fileNode.content === "string" ? fileNode.content : "";
+                        if (!content) continue;
+                        const parsed = parseHostMapContent(content);
+                        if (Object.keys(parsed).length > 0) {
+                            if (fileName !== GIST_FILENAME) {
+                                console.log(`ℹ️ 当前HostMap基线来源: ${fileName}（兼容读取）`);
+                            }
+                            resolve(parsed);
+                            return;
+                        }
+                    }
+                    resolve(null);
                 } catch (error) {
                     resolve(null);
                 }
