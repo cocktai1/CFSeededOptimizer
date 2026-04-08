@@ -4,6 +4,7 @@
 #!author=cocktai
 #!tag=Cloudflare, IP优选, 采集
 #!system=ios
+#!icon=https://img.icons8.com/fluency/96/cloud-download.png
 
 [Argument]
 # 无需配置参数 - 使用脚本内置的三梯队默认种子
