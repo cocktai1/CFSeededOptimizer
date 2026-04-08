@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v4";
+const SCRIPT_VERSION = "2026-04-09.v5";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -18,6 +18,7 @@ const DEFAULT_SEED_DOMAINS = [
 
 const TARGET_DOMAINS_RAW = String(ARG.CF_TARGET_DOMAINS || "").trim();
 const SEED_DOMAINS_RAW = String(ARG.CF_SEED_DOMAINS || DEFAULT_SEED_DOMAINS.join("\n")).trim();
+const EXTRA_DOMAINS_RAW = String(ARG.CF_EXTRA_DOMAINS || "").trim();
 const SEED_POOL_URL = String(ARG.CF_SEED_POOL_URL || "https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json").trim();
 const GITHUB_TOKEN = String(ARG.CF_TOKEN || "").trim();
 const GIST_ID = String(ARG.CF_GIST_ID || "").trim();
@@ -34,9 +35,30 @@ const PROBE_PATH = String(ARG.CF_PROBE_PATH || "/system/info/public,/web/index.h
 const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10) || 6000;
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
 const EVAL_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_EVAL_CONCURRENCY || "4"), 10) || 4));
+const DNS_QUERY_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_DNS_CONCURRENCY || "4"), 10) || 4));
 
 const STORE_RESULT_KEY = "CF_HYBRID_HARVEST_RESULT";
 const STORE_BEST_KEY = "CF_LOCAL_BEST_IP_RESULT";
+const DNS_CACHE = new Map();
+
+function notify(title, subtitle, message, options) {
+    const t = String(title || "");
+    const s = String(subtitle || "");
+    const m = String(message || "");
+    try {
+        if (options && typeof options === "object") {
+            $notification.post(t, s, m, options);
+            return;
+        }
+        $notification.post(t, s, m);
+    } catch (error) {
+        try {
+            $notification.post(t, s, m);
+        } catch (_) {
+            // ignore notification failures
+        }
+    }
+}
 
 const CF_IPV4_CIDRS = [
     "103.21.244.0/22",
@@ -215,20 +237,26 @@ async function fetchRemoteSeedPool(url) {
 }
 
 async function fetchDoHARecords(domainName) {
+    const normalized = normalizeDomainToken(domainName);
+    if (!normalized) return [];
+    if (DNS_CACHE.has(normalized)) {
+        return DNS_CACHE.get(normalized);
+    }
+
     const endpoints = [
         {
             name: "alidns",
-            url: `https://dns.alidns.com/resolve?name=${encodeURIComponent(domainName)}&type=A`,
+            url: `https://dns.alidns.com/resolve?name=${encodeURIComponent(normalized)}&type=A`,
             headers: { "Accept": "application/dns-json", "User-Agent": "Loon" }
         },
         {
             name: "cloudflare-dns",
-            url: `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domainName)}&type=A`,
+            url: `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(normalized)}&type=A`,
             headers: { "Accept": "application/dns-json", "User-Agent": "Loon" }
         },
         {
             name: "dns-google",
-            url: `https://dns.google/resolve?name=${encodeURIComponent(domainName)}&type=A`,
+            url: `https://dns.google/resolve?name=${encodeURIComponent(normalized)}&type=A`,
             headers: { "Accept": "application/dns-json", "User-Agent": "Loon" }
         }
     ];
@@ -246,30 +274,29 @@ async function fetchDoHARecords(domainName) {
             }
         });
     })));
-    return uniqueIPv4List(results.flat());
+    const merged = uniqueIPv4List(results.flat());
+    DNS_CACHE.set(normalized, merged);
+    return merged;
 }
 
 async function collectLocalSeedIPs(seedDomains) {
-    const validSeedDomains = [];
-    const invalidSeedDomains = [];
-    const ips = [];
-
-    for (const domainName of seedDomains) {
+    const reports = await mapWithConcurrency(seedDomains, DNS_QUERY_CONCURRENCY, async (domainName) => {
         const sourceIps = await fetchDoHARecords(domainName);
-        const sourceName = "local_dns";
-
         const cfIps = uniqueIPv4List(sourceIps.filter(isCloudflareIPv4));
-        if (cfIps.length > 0) {
-            validSeedDomains.push(domainName);
-            ips.push(...cfIps);
-            console.log(`  ✓ ${sourceName}: ${cfIps.length} CF IPs`);
-        } else {
-            invalidSeedDomains.push(domainName);
-            console.log(`  → No CF IPs found (${sourceName})`);
-        }
+        return { domainName, cfIps };
+    });
 
-        await new Promise(resolve => setTimeout(resolve, 350));
-    }
+    const validSeedDomains = reports.filter(item => item.cfIps.length > 0).map(item => item.domainName);
+    const invalidSeedDomains = reports.filter(item => item.cfIps.length === 0).map(item => item.domainName);
+    const ips = reports.flatMap(item => item.cfIps);
+
+    reports.forEach(item => {
+        if (item.cfIps.length > 0) {
+            console.log(`  ✓ local_dns: ${item.cfIps.length} CF IPs`);
+        } else {
+            console.log("  → No CF IPs found (local_dns)");
+        }
+    });
 
     return {
         validSeedDomains,
@@ -645,16 +672,13 @@ async function main() {
     const targetDomains = parseDomainList(TARGET_DOMAINS_RAW);
     if (!targetDomains.length || isPlaceholder(TARGET_DOMAINS_RAW)) {
         console.log("❌ CF_TARGET_DOMAINS 未设置，请填写你的反代域名后再运行。");
-        $notification.post({
-            title: "❌ 缺少目标域名",
-            message: "请在插件参数中填写 CF_TARGET_DOMAINS（你的反代域名）",
-            sound: "default"
-        });
+        notify("❌ 缺少目标域名", "参数未配置", "请在插件参数中填写 CF_TARGET_DOMAINS（你的反代域名）");
         $done();
         return;
     }
 
     const seedDomains = parseDomainList(SEED_DOMAINS_RAW);
+    const extraDomains = parseDomainList(EXTRA_DOMAINS_RAW);
     console.log("🚀 开始执行：云端种子池 + 本地采集 + 本地大比拼");
     console.log(`🎯 目标域名: ${targetDomains.join("，")}`);
     if (!PROBE_PATH) {
@@ -668,6 +692,26 @@ async function main() {
     const localSeedResult = await collectLocalSeedIPs(seedDomains);
     console.log(`📱 本地采集: 有效=${localSeedResult.validSeedDomains.length} 无效=${localSeedResult.invalidSeedDomains.length} IP=${localSeedResult.ips.length}`);
     console.log(`📊 本地DNS状态: 查询=${localSeedResult.stats.localDnsQueries} 命中=${localSeedResult.stats.localDnsHits} 未命中=${localSeedResult.stats.localDnsMisses}`);
+
+    const extraDomainDiagnostics = [];
+    const extraDomainIps = [];
+    if (extraDomains.length) {
+        const extraReports = await mapWithConcurrency(extraDomains, DNS_QUERY_CONCURRENCY, async (domainName) => {
+            const ips = await fetchDoHARecords(domainName);
+            const cfIps = uniqueIPv4List(ips.filter(isCloudflareIPv4));
+            return { domainName, ips, cfIps };
+        });
+        for (const item of extraReports) {
+            if (item.cfIps.length > 0) {
+                extraDomainIps.push(...item.cfIps);
+                extraDomainDiagnostics.push({ domain: item.domainName, status: "valid", reason: "cf_a_record_found", dnsA: item.ips.length, cfA: item.cfIps.length });
+            } else {
+                extraDomainDiagnostics.push({ domain: item.domainName, status: "invalid", reason: item.ips.length ? "not_cloudflare" : "no_a_record_or_dns_failed", dnsA: item.ips.length, cfA: 0 });
+            }
+        }
+        const extraValid = extraDomainDiagnostics.filter(item => item.status === "valid").length;
+        console.log(`🧩 扩展域名池: 总数=${extraDomains.length} 有效=${extraValid} 候选IP=${uniqueIPv4List(extraDomainIps).length}`);
+    }
 
     const targetDnsIps = [];
     const validTargetDomains = [];
@@ -689,11 +733,7 @@ async function main() {
 
     if (!validTargetDomains.length) {
         console.log("❌ 你填写的目标域名没有解析到 Cloudflare IP，已跳过 host 映射。");
-        $notification.post({
-            title: "⚠️ 目标域名不是 CF 域名",
-            message: "未检测到 Cloudflare 解析结果，已停止 host 映射",
-            sound: "default"
-        });
+        notify("⚠️ 目标域名不是 CF 域名", "已停止映射更新", "未检测到 Cloudflare 解析结果");
         $done();
         return;
     }
@@ -701,16 +741,13 @@ async function main() {
     const candidatePool = uniqueIPv4List([
         ...remoteIps,
         ...localSeedResult.ips,
+        ...extraDomainIps,
         ...targetDnsIps
     ]).slice(0, CANDIDATE_LIMIT);
 
     if (!candidatePool.length) {
         console.log("❌ candidatePool 为空，无法进行本地大比拼。");
-        $notification.post({
-            title: "❌ 候选池为空",
-            message: "云端和本地都没有拿到可用 CF IP，请检查网络/订阅",
-            sound: "default"
-        });
+        notify("❌ 候选池为空", "无法执行优选", "云端和本地都没有拿到可用 CF IP，请检查网络/订阅");
         $done();
         return;
     }
@@ -788,11 +825,7 @@ async function main() {
         if (rejectedOptions.length) {
             rejectedOptions.forEach(item => console.log(`  - ${item.source} ${item.ip}: ${item.reason}`));
         }
-        $notification.post({
-            title: "⚠️ CF优选已拦截不可访问IP",
-            message: "候选IP触发403/1034等限制，已停止更新HostMap",
-            sound: "default"
-        });
+        notify("⚠️ CF优选已拦截不可访问IP", "安全模式已生效", "候选IP触发403/1034等限制，已停止更新HostMap");
         $done();
         return;
     }
@@ -823,6 +856,8 @@ async function main() {
             valid_target_domains: validTargetDomains,
             invalid_target_domains: invalidTargetDomains,
             target_domain_diagnostics: targetDomainDiagnostics,
+            extra_domains: extraDomains,
+            extra_domain_diagnostics: extraDomainDiagnostics,
             candidate_pool_size: candidatePool.length,
             local_stats: localSeedResult.stats,
             cloud_seed_count: remoteIps.length,
@@ -883,11 +918,11 @@ async function main() {
         console.log(`⚠️ 本地缓存写入失败: ${error.message}`);
     }
 
-    $notification.post({
-        title: "✅ CF 本地大比拼完成",
-        message: `${targetDomains[0]} -> ${selected.row.ip} (${selected.row.delay}ms, 评分=${selected.row.score}, 来源=${selected.source})`,
-        sound: "default"
-    });
+    notify(
+        "✅ CF 本地大比拼完成",
+        `来源=${selected.source} | ${targetDomains[0]}`,
+        `${selected.row.ip} | ${selected.row.delay}ms | score=${selected.row.score}`
+    );
 
     console.log("🏁 执行完成");
     $done();
@@ -895,10 +930,6 @@ async function main() {
 
 main().catch(error => {
     console.log(`❌ 致命错误: ${error.message}`);
-    $notification.post({
-        title: "❌ CF 混合优选失败",
-        message: error.message,
-        sound: "default"
-    });
+    notify("❌ CF 混合优选失败", "运行异常", error.message);
     $done();
 });
