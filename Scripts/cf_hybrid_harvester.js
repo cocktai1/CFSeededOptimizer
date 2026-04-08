@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v2";
+const SCRIPT_VERSION = "2026-04-09.v3";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -507,6 +507,96 @@ async function syncBestToGist(bestIp, targets) {
     });
 }
 
+function parseHostMapContent(content) {
+    const result = {};
+    const lines = String(content || "").split(/\r?\n/);
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#") || line.startsWith("[")) continue;
+        if (!line.includes("=")) continue;
+        const [left, rightRaw] = line.split("=");
+        const domain = normalizeDomainToken(left);
+        const right = String(rightRaw || "").trim();
+        const ipToken = right.split(",")[0].trim();
+        if (!domain || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ipToken)) continue;
+        result[domain] = ipToken;
+    }
+    return result;
+}
+
+async function fetchCurrentGistHostMap() {
+    if (!hasValidGistAuth()) return null;
+    const headers = {
+        "Authorization": `token ${GITHUB_TOKEN}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Loon-CF-Hybrid"
+    };
+    return new Promise(resolve => {
+        $httpClient.get(
+            {
+                url: `https://api.github.com/gists/${GIST_ID}`,
+                headers,
+                timeout: 6000,
+                node: "DIRECT"
+            },
+            (err, resp, data) => {
+                if (err || !resp || Number(resp.status || 0) >= 300 || !data) {
+                    resolve(null);
+                    return;
+                }
+                try {
+                    const json = JSON.parse(data);
+                    const files = json && json.files ? json.files : {};
+                    const fileNode = files[GIST_FILENAME];
+                    const content = fileNode && typeof fileNode.content === "string" ? fileNode.content : "";
+                    resolve(parseHostMapContent(content));
+                } catch (error) {
+                    resolve(null);
+                }
+            }
+        );
+    });
+}
+
+async function evaluateSingleIpAcrossDomains(ipAddress, domains) {
+    const rows = await Promise.all(domains.map(async (domainName) => {
+        const sampled = await samplePing(ipAddress, domainName);
+        let probeKbps = null;
+        let score = sampled.score;
+        if (PROBE_PATH) {
+            const probe = await runProbe(ipAddress, domainName);
+            if (probe && Number.isFinite(probe.kbps)) {
+                probeKbps = probe.kbps;
+                score += Math.max(0, MIN_PROBE_KBPS - probe.kbps);
+            }
+        }
+        return {
+            delay: sampled.delay,
+            jitter: sampled.jitter,
+            successRate: sampled.successRate,
+            score,
+            probeKbps
+        };
+    }));
+
+    const count = Math.max(1, rows.length);
+    const probeRows = rows.filter(r => typeof r.probeKbps === "number");
+    return {
+        ip: ipAddress,
+        score: Math.round(rows.reduce((sum, r) => sum + r.score, 0) / count),
+        delay: Math.round(rows.reduce((sum, r) => sum + r.delay, 0) / count),
+        jitter: Math.round(rows.reduce((sum, r) => sum + r.jitter, 0) / count),
+        successRate: Number((rows.reduce((sum, r) => sum + r.successRate, 0) / count).toFixed(2)),
+        probeKbps: probeRows.length ? Math.round(probeRows.reduce((sum, r) => sum + r.probeKbps, 0) / probeRows.length) : null
+    };
+}
+
+function formatDelta(msValue) {
+    if (typeof msValue !== "number" || !Number.isFinite(msValue)) return "n/a";
+    const sign = msValue > 0 ? "+" : "";
+    return `${sign}${msValue}ms`;
+}
+
 async function main() {
     console.log(`🔄 CF 混合优选采集器已启动 (script=${SCRIPT_VERSION})`);
 
@@ -540,14 +630,18 @@ async function main() {
     const targetDnsIps = [];
     const validTargetDomains = [];
     const invalidTargetDomains = [];
+    const targetDomainDiagnostics = [];
     for (const domainName of targetDomains) {
         const ips = await fetchDoHARecords(domainName);
         const cfIps = ips.filter(isCloudflareIPv4);
         if (cfIps.length) {
             validTargetDomains.push(domainName);
             targetDnsIps.push(...cfIps);
+            targetDomainDiagnostics.push({ domain: domainName, status: "valid", reason: "cf_a_record_found", dnsA: ips.length, cfA: cfIps.length });
         } else {
             invalidTargetDomains.push(domainName);
+            const reason = ips.length ? "not_cloudflare" : "no_a_record_or_dns_failed";
+            targetDomainDiagnostics.push({ domain: domainName, status: "invalid", reason, dnsA: ips.length, cfA: 0 });
         }
     }
 
@@ -618,17 +712,41 @@ async function main() {
     })).sort((a, b) => a.score - b.score);
 
     const best = finalRanking[0];
-    const mappingSuggestion = buildMappingSuggestion(best.ip, validTargetDomains);
-    const pluginSnippet = buildPluginSnippet(best.ip, validTargetDomains);
-    const hostSnippet = buildHostSnippet(best.ip, validTargetDomains);
+    const dnsOnlyRanking = finalRanking.filter(row => targetDnsIps.includes(row.ip));
+    const dnsBaseline = dnsOnlyRanking.length ? dnsOnlyRanking[0] : null;
 
-    const gistSynced = await syncBestToGist(best.ip, validTargetDomains);
+    const currentHostMap = await fetchCurrentGistHostMap();
+    const currentMappedIp = currentHostMap && validTargetDomains.length ? currentHostMap[validTargetDomains[0]] : null;
+    let hostmapBaseline = null;
+    if (currentMappedIp && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(currentMappedIp)) {
+        hostmapBaseline = await evaluateSingleIpAcrossDomains(currentMappedIp, validTargetDomains);
+    }
+
+    const options = [
+        { source: "hybrid_pool", row: best }
+    ];
+    if (dnsBaseline) options.push({ source: "dns_baseline", row: dnsBaseline });
+    if (hostmapBaseline) options.push({ source: "current_hostmap", row: hostmapBaseline });
+    options.sort((a, b) => a.row.score - b.row.score);
+
+    const selected = options[0];
+    const selectedIp = selected.row.ip;
+
+    const mappingSuggestion = buildMappingSuggestion(selectedIp, validTargetDomains);
+    const pluginSnippet = buildPluginSnippet(selectedIp, validTargetDomains);
+    const hostSnippet = buildHostSnippet(selectedIp, validTargetDomains);
+
+    const gistSynced = await syncBestToGist(selectedIp, validTargetDomains);
+
+    const improveVsHybrid = best ? (best.delay - selected.row.delay) : null;
+    const improveVsDns = dnsBaseline ? (dnsBaseline.delay - selected.row.delay) : null;
+    const improveVsCurrent = hostmapBaseline ? (hostmapBaseline.delay - selected.row.delay) : null;
 
     const output = {
         seed_domains: seedDomains,
         valid_seed_domains: localSeedResult.validSeedDomains,
         invalid_seed_domains: localSeedResult.invalidSeedDomains,
-        ips: uniqueIPv4List([...remoteIps, ...localSeedResult.ips]).slice(0, MAX_IPS),
+        ips: uniqueIPv4List([...candidatePool]).slice(0, MAX_IPS),
         updated_at: Math.floor(Date.now() / 1000),
         source: "loon-hybrid-harvester",
         extended: {
@@ -637,11 +755,21 @@ async function main() {
             target_domains: targetDomains,
             valid_target_domains: validTargetDomains,
             invalid_target_domains: invalidTargetDomains,
+            target_domain_diagnostics: targetDomainDiagnostics,
             candidate_pool_size: candidatePool.length,
             local_stats: localSeedResult.stats,
             cloud_seed_count: remoteIps.length,
             target_dns_cf_count: targetDnsIps.length,
-            final_best: best,
+            final_best: selected.row,
+            final_best_source: selected.source,
+            comparison: {
+                hybrid_pool_best: best || null,
+                dns_baseline: dnsBaseline,
+                current_hostmap_baseline: hostmapBaseline,
+                improved_ms_vs_hybrid_pool: improveVsHybrid,
+                improved_ms_vs_dns: improveVsDns,
+                improved_ms_vs_current_hostmap: improveVsCurrent
+            },
             final_ranking_top10: finalRanking.slice(0, 10),
             mapping_suggestion: mappingSuggestion,
             gist_snippet_host: hostSnippet,
@@ -659,12 +787,29 @@ async function main() {
     console.log("\n📋 Gist Plugin 片段:");
     console.log(output.extended.gist_snippet_plugin);
 
+    console.log("\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("┃ 📌 本轮优选总结");
+    console.log(`┃ 赢家来源: ${selected.source}`);
+    console.log(`┃ 最终IP: ${selected.row.ip}`);
+    console.log(`┃ 延迟/抖动/评分: ${selected.row.delay}ms / ${selected.row.jitter}ms / ${selected.row.score}`);
+    console.log(`┃ 对混合池第一名改善: ${formatDelta(improveVsHybrid)}`);
+    console.log(`┃ 对DNS基线改善: ${formatDelta(improveVsDns)}`);
+    console.log(`┃ 对当前HostMap改善: ${formatDelta(improveVsCurrent)}`);
+    if (invalidTargetDomains.length) {
+        console.log("┃ 被淘汰域名:");
+        for (const item of targetDomainDiagnostics.filter(d => d.status === "invalid")) {
+            console.log(`┃ - ${item.domain} => ${item.reason} (dnsA=${item.dnsA}, cfA=${item.cfA})`);
+        }
+    }
+    console.log("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
     try {
         $persistentStore.write(outputJson, STORE_RESULT_KEY);
         $persistentStore.write(JSON.stringify({
             updated_at: output.updated_at,
             target_domains: targetDomains,
-            best
+            best: selected.row,
+            best_source: selected.source
         }), STORE_BEST_KEY);
     } catch (error) {
         console.log(`⚠️ 本地缓存写入失败: ${error.message}`);
@@ -672,7 +817,7 @@ async function main() {
 
     $notification.post({
         title: "✅ CF 本地大比拼完成",
-        message: `${targetDomains[0]} -> ${best.ip} (${best.delay}ms, 评分=${best.score})`,
+        message: `${targetDomains[0]} -> ${selected.row.ip} (${selected.row.delay}ms, 评分=${selected.row.score}, 来源=${selected.source})`,
         sound: "default"
     });
 
