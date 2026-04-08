@@ -2,6 +2,60 @@ name: CF Seed Pool Refresh
 
 on:
   workflow_dispatch:
+    inputs:
+      city:
+        description: 'Target city for location-aware harvesting'
+        required: false
+        default: '成都'
+        type: choice
+        options:
+          - 成都
+          - 北京
+          - 上海
+          - 广州
+          - 深圳
+          - 杭州
+          - 南京
+          - 武汉
+          - 西安
+          - 重庆
+          - 苏州
+          - 天津
+      isp:
+        description: 'Target ISP type'
+        required: false
+        default: '电信'
+        type: choice
+        options:
+          - 电信
+          - 联通
+          - 移动
+          - 铁通
+          - 教育网
+      speed_preference:
+        description: 'Speed preference level'
+        required: false
+        default: 'balanced'
+        type: choice
+        options:
+          - ultra_fast
+          - fast
+          - balanced
+          - stable
+      network_type:
+        description: 'Network type'
+        required: false
+        default: 'fixed'
+        type: choice
+        options:
+          - fixed
+          - 4g
+          - 5g
+      enable_location_aware:
+        description: 'Enable location-aware ITDog harvesting'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '15 */12 * * *'
 
@@ -26,6 +80,12 @@ jobs:
           CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS || 'time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com' }}
           CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS || '12' }}
           CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT || '80' }}
+          CF_HARVEST_STRATEGIES: ${{ github.event.inputs.enable_location_aware == 'true' && 'dns,itdog_location' || vars.CF_HARVEST_STRATEGIES || 'dns' }}
+          CF_HARVEST_CITY: ${{ github.event.inputs.city || vars.CF_HARVEST_CITY || '成都' }}
+          CF_HARVEST_ISP: ${{ github.event.inputs.isp || vars.CF_HARVEST_ISP || '电信' }}
+          CF_HARVEST_SPEED_PREFERENCE: ${{ github.event.inputs.speed_preference || vars.CF_HARVEST_SPEED_PREFERENCE || 'balanced' }}
+          CF_HARVEST_NETWORK_TYPE: ${{ github.event.inputs.network_type || vars.CF_HARVEST_NETWORK_TYPE || 'fixed' }}
+          CF_HARVEST_PREFER_FRESH: ${{ vars.CF_HARVEST_PREFER_FRESH || 'true' }}
           CF_OUTPUT_FILE: data/seed_pool.json
         run: |
           python tools/seed_pool_harvest.py

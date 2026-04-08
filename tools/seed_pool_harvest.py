@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List
 
-from strategies import DNSHarvester, ITDogHarvester, StrategyResult
+from strategies import DNSHarvester, ITDogHarvester, LocationAwareITDogHarvester, StrategyResult
 
 DEFAULT_SEED_DOMAIN_GROUPS = {
     "tier1": [
@@ -53,6 +53,7 @@ DEFAULT_SEED_DOMAINS = [
 STRATEGY_REGISTRY = {
     "dns": DNSHarvester,
     "itdog": ITDogHarvester,
+    "itdog_location": LocationAwareITDogHarvester,
 }
 
 
@@ -179,7 +180,33 @@ def main() -> int:
     parser.add_argument(
         "--strategies",
         default=os.environ.get("CF_HARVEST_STRATEGIES", "dns"),
-        help="Comma-separated strategy names (dns, itdog). Default: dns",
+        help="Comma-separated strategy names (dns, itdog, itdog_location). Default: dns",
+    )
+    parser.add_argument(
+        "--city",
+        default=os.environ.get("CF_HARVEST_CITY", "成都"),
+        help="Target city for location-aware harvesting (成都/北京/上海/广州/深圳/杭州/南京/武汉/西安/重庆/苏州/天津). Default: 成都",
+    )
+    parser.add_argument(
+        "--isp",
+        default=os.environ.get("CF_HARVEST_ISP", "电信"),
+        help="Target ISP type (电信/联通/移动/铁通/教育网). Default: 电信",
+    )
+    parser.add_argument(
+        "--speed-preference",
+        default=os.environ.get("CF_HARVEST_SPEED_PREFERENCE", "balanced"),
+        help="Speed preference (ultra_fast/fast/balanced/stable). Default: balanced",
+    )
+    parser.add_argument(
+        "--network-type",
+        default=os.environ.get("CF_HARVEST_NETWORK_TYPE", "fixed"),
+        help="Network type (fixed/4g/5g). Default: fixed",
+    )
+    parser.add_argument(
+        "--prefer-fresh",
+        action="store_true",
+        default=os.environ.get("CF_HARVEST_PREFER_FRESH", "true").lower() == "true",
+        help="Prefer fresh IPs. Default: true",
     )
     parser.add_argument(
         "--output",
@@ -209,10 +236,30 @@ def main() -> int:
     for strategy_name in strategy_names:
         try:
             harvester_class = get_harvester_class(strategy_name)
-            harvester = harvester_class(max_seed_domains=args.max_seed_domains, max_ips=args.seed_pool_limit)
+            
+            # Instantiate harvester with appropriate parameters
+            if strategy_name == "itdog_location":
+                harvester = harvester_class(
+                    max_seed_domains=args.max_seed_domains,
+                    max_ips=args.seed_pool_limit,
+                    city=args.city,
+                    isp=args.isp,
+                    speed_preference=args.speed_preference,
+                    network_type=args.network_type,
+                    prefer_fresh=args.prefer_fresh,
+                )
+            else:
+                harvester = harvester_class(max_seed_domains=args.max_seed_domains, max_ips=args.seed_pool_limit)
+            
             result = harvester.harvest(seed_domains)
             results.append(result)
-            print(f"✓ {strategy_name}: {len(result.ips)} IPs in {result.elapsed_ms}ms", file=sys.stderr)
+            
+            # Enhanced output for location-aware strategy
+            if strategy_name == "itdog_location":
+                print(f"✓ {strategy_name} ({args.city}/{args.isp}): {len(result.ips)} IPs in {result.elapsed_ms}ms", file=sys.stderr)
+            else:
+                print(f"✓ {strategy_name}: {len(result.ips)} IPs in {result.elapsed_ms}ms", file=sys.stderr)
+            
             if result.error:
                 print(f"  ⚠️  {result.error}", file=sys.stderr)
         except Exception as e:
