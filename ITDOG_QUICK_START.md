@@ -172,6 +172,13 @@ A:
 - 标准优选 = 负责最终测速 + Gist 写入
 - ITDog 工具 = 只负责采集 seed pool
 
+**Q: 失败策略/严格模式还要手动输入吗？**
+
+A: 不需要（新版插件已支持点击选择）
+- 失败策略：`keep_current` / `skip_domain` / `abort`
+- 严格验活模式：`on` / `off`
+- 输出模式：`plugin` / `host`
+
 ## 推荐工作流
 
 ```

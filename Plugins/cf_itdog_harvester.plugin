@@ -11,7 +11,7 @@
 CF_TOKEN = input,"",tag=GitHub Token,desc=可选：填写后自动写入 Gist
 CF_GIST_ID = input,"",tag=Gist ID,desc=可选：填写后自动写入 CF_HostMap
 CF_GIST_FILE = input,"CF_HostMap.plugin",tag=Gist 文件名,desc=建议保留默认 CF_HostMap.plugin
-CF_OUTPUT_MODE = input,"plugin",tag=输出模式,desc=plugin/host；plugin 可直接作为插件订阅
+CF_OUTPUT_MODE = select,"plugin",plugin,host,tag=输出模式,desc=可点击选择：plugin(生成插件) / host(仅映射)
 CF_TARGET_DOMAINS = input,"",tag=目标反代域名,desc=必填：支持英文逗号或换行，示例 emby.example.com
 CF_EXTRA_DOMAINS = input,"",tag=扩展CF域名池,desc=可选：填入额外域名用于解析补充候选IP（会自动校验是否为CF域名）
 CF_SEED_POOL_URL = input,"https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json",tag=云端种子池URL,desc=默认读取仓库内 seed_pool.json
@@ -27,8 +27,8 @@ CF_JITTER_WEIGHT = input,"0.9",tag=抖动权重,desc=评分中抖动惩罚系数
 CF_PROBE_PATH = input,"/system/info/public,/web/index.html",tag=业务探针路径,desc=优先 /system/info/public，备选 /web/index.html；更贴近真实体验
 CF_PROBE_TIMEOUT = input,"6000",tag=探针超时(ms),desc=业务探针请求超时
 CF_MIN_PROBE_KBPS = input,"250",tag=探针最低速率(KB/s),desc=低于该速率会增加惩罚分
-CF_STRICT_ACCESS_MODE = input,"on",tag=严格验活模式,desc=on/off：on时HTTP>=400即拦截，off时仅拦截明显不可用(含1034)
-CF_ON_FAIL_STRATEGY = input,"keep_current",tag=失败策略,desc=abort/keep_current/skip_domain：域名无可用IP时如何处理
+CF_STRICT_ACCESS_MODE = select,"on",on,off,tag=严格验活模式,desc=可点击选择：on=HTTP>=400即拦截；off=仅拦截明显不可用(含1034)
+CF_ON_FAIL_STRATEGY = select,"keep_current",keep_current,skip_domain,abort,tag=失败策略,desc=可点击选择：keep_current=保留当前；skip_domain=跳过该域名；abort=中止本次任务
 CF_ACCESS_CHECK_PATHS = input,"/cdn-cgi/trace,/",tag=验活路径,desc=可配置多个路径，逗号分隔；用于写入前可访问性校验
 
 [Script]
