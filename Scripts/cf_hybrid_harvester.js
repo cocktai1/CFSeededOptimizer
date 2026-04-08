@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v5";
+const SCRIPT_VERSION = "2026-04-09.v6";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -493,16 +493,17 @@ async function evaluateCandidates(candidates, hostName) {
     return scored;
 }
 
-function buildMappingSuggestion(bestIp, targets) {
-    return targets.map(domainName => ({
-        domain: domainName,
-        ip: bestIp,
-        host: `${domainName} = ${bestIp}`
+function buildMappingSuggestion(mappings) {
+    return mappings.map(item => ({
+        domain: item.domain,
+        ip: item.ip,
+        source: item.source,
+        host: `${item.domain} = ${item.ip}`
     }));
 }
 
-function buildPluginSnippet(bestIp, targets) {
-    const lines = targets.map(domainName => `${domainName} = ${bestIp}`);
+function buildPluginSnippet(mappings) {
+    const lines = mappings.map(item => `${item.domain} = ${item.ip}`);
     return [
         "[Host]",
         ...lines,
@@ -510,12 +511,12 @@ function buildPluginSnippet(bestIp, targets) {
     ].join("\n");
 }
 
-function buildHostSnippet(bestIp, targets) {
-    return targets.map(domainName => `${domainName} = ${bestIp}`).join("\n");
+function buildHostSnippet(mappings) {
+    return mappings.map(item => `${item.domain} = ${item.ip}`).join("\n");
 }
 
-function buildGeneratedPlugin(bestIp, targets) {
-    const hostLines = targets.map(domainName => `${domainName} = ${bestIp}`).join("\n");
+function buildGeneratedPlugin(mappings) {
+    const hostLines = mappings.map(item => `${item.domain} = ${item.ip}`).join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
@@ -529,14 +530,14 @@ function buildGeneratedPlugin(bestIp, targets) {
     ].join("\n");
 }
 
-async function syncBestToGist(bestIp, targets) {
+async function syncBestToGist(mappings) {
     if (!hasValidGistAuth()) {
         console.log("ℹ️ 未配置 GitHub Token/Gist ID，跳过自动写入 Gist。仅保留本地结果。");
         return false;
     }
 
-    const hostContent = buildHostSnippet(bestIp, targets);
-    const pluginContent = buildGeneratedPlugin(bestIp, targets);
+    const hostContent = buildHostSnippet(mappings);
+    const pluginContent = buildGeneratedPlugin(mappings);
     const content = OUTPUT_MODE === "host" ? hostContent : pluginContent;
 
     const payload = {
@@ -714,12 +715,14 @@ async function main() {
     }
 
     const targetDnsIps = [];
+    const targetDnsByDomain = new Map();
     const validTargetDomains = [];
     const invalidTargetDomains = [];
     const targetDomainDiagnostics = [];
     for (const domainName of targetDomains) {
         const ips = await fetchDoHARecords(domainName);
         const cfIps = ips.filter(isCloudflareIPv4);
+        targetDnsByDomain.set(domainName, cfIps);
         if (cfIps.length) {
             validTargetDomains.push(domainName);
             targetDnsIps.push(...cfIps);
@@ -790,57 +793,88 @@ async function main() {
         probeKbps: value.probeCount ? Math.round(value.probeSum / value.probeCount) : null
     })).sort((a, b) => a.score - b.score);
 
-    const best = finalRanking[0];
-    const dnsOnlyRanking = finalRanking.filter(row => targetDnsIps.includes(row.ip));
-    const dnsBaseline = dnsOnlyRanking.length ? dnsOnlyRanking[0] : null;
-
     const currentHostMap = await fetchCurrentGistHostMap();
-    const currentMappedIp = currentHostMap && validTargetDomains.length ? currentHostMap[validTargetDomains[0]] : null;
-    let hostmapBaseline = null;
-    if (currentMappedIp && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(currentMappedIp)) {
-        hostmapBaseline = await evaluateSingleIpAcrossDomains(currentMappedIp, validTargetDomains);
-    }
-
-    const options = [
-        { source: "hybrid_pool", row: best }
-    ];
-    if (dnsBaseline) options.push({ source: "dns_baseline", row: dnsBaseline });
-    if (hostmapBaseline) options.push({ source: "current_hostmap", row: hostmapBaseline });
-    options.sort((a, b) => a.row.score - b.row.score);
-    let selected = null;
+    const selectedMappings = [];
+    const domainComparisons = [];
     const rejectedOptions = [];
-    for (const option of options) {
-        const ipAddress = option && option.row ? option.row.ip : "";
-        if (!ipAddress) continue;
-        const accessible = await verifyIpAccessibleForDomains(ipAddress, validTargetDomains);
-        if (accessible) {
-            selected = option;
-            break;
+
+    for (const domainName of validTargetDomains) {
+        const report = perDomainRanking.find(item => item.domainName === domainName);
+        const rows = report ? report.rows : [];
+        const hybridBest = rows.length ? rows[0] : null;
+        const dnsSet = new Set((targetDnsByDomain.get(domainName) || []).map(ip => String(ip)));
+        const dnsBaseline = rows.find(row => dnsSet.has(String(row.ip))) || null;
+
+        const currentMappedIp = currentHostMap ? currentHostMap[domainName] : null;
+        let hostmapBaseline = null;
+        if (currentMappedIp && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(currentMappedIp)) {
+            hostmapBaseline = await evaluateSingleIpAcrossDomains(currentMappedIp, [domainName]);
         }
-        rejectedOptions.push({ source: option.source, ip: ipAddress, reason: "access_blocked_or_403_1034" });
+
+        const options = [];
+        if (hybridBest) options.push({ source: "hybrid_pool", row: hybridBest });
+        if (dnsBaseline) options.push({ source: "dns_baseline", row: dnsBaseline });
+        if (hostmapBaseline) options.push({ source: "current_hostmap", row: hostmapBaseline });
+        options.sort((a, b) => a.row.score - b.row.score);
+
+        let selected = null;
+        for (const option of options) {
+            const ipAddress = option && option.row ? option.row.ip : "";
+            if (!ipAddress) continue;
+            const accessible = await verifyIpAccessibleForDomain(ipAddress, domainName);
+            if (accessible) {
+                selected = option;
+                break;
+            }
+            rejectedOptions.push({ domain: domainName, source: option.source, ip: ipAddress, reason: "access_blocked_or_403_1034" });
+        }
+
+        if (selected) {
+            selectedMappings.push({
+                domain: domainName,
+                ip: selected.row.ip,
+                source: selected.source,
+                delay: selected.row.delay,
+                jitter: selected.row.jitter,
+                score: selected.row.score,
+                successRate: selected.row.successRate,
+                probeKbps: selected.row.probeKbps
+            });
+        }
+
+        const compareRef = selected ? selected.row : (hybridBest || dnsBaseline || hostmapBaseline);
+        domainComparisons.push({
+            domain: domainName,
+            selected_source: selected ? selected.source : "none",
+            selected: selected ? selected.row : null,
+            hybrid_pool_best: hybridBest,
+            dns_baseline: dnsBaseline,
+            current_hostmap_baseline: hostmapBaseline,
+            improved_ms_vs_hybrid_pool: selected && hybridBest ? (hybridBest.delay - selected.row.delay) : null,
+            improved_ms_vs_dns: selected && dnsBaseline ? (dnsBaseline.delay - selected.row.delay) : null,
+            improved_ms_vs_current_hostmap: selected && hostmapBaseline ? (hostmapBaseline.delay - selected.row.delay) : null,
+            fallback_reason: selected ? null : "all_candidates_blocked_or_403_1034"
+        });
     }
 
-    if (!selected) {
-        console.log("❌ 所有候选IP均未通过可访问性校验，已停止写入，避免把不可访问IP写入HostMap。");
+    if (!selectedMappings.length) {
+        console.log("❌ 所有域名候选IP均未通过可访问性校验，已停止写入，避免把不可访问IP写入HostMap。");
         if (rejectedOptions.length) {
-            rejectedOptions.forEach(item => console.log(`  - ${item.source} ${item.ip}: ${item.reason}`));
+            rejectedOptions.forEach(item => console.log(`  - ${item.domain} ${item.source} ${item.ip}: ${item.reason}`));
         }
         notify("⚠️ CF优选已拦截不可访问IP", "安全模式已生效", "候选IP触发403/1034等限制，已停止更新HostMap");
         $done();
         return;
     }
 
-    const selectedIp = selected.row.ip;
+    const selectedMappingsSorted = selectedMappings.slice().sort((a, b) => a.score - b.score);
+    const overallBest = selectedMappingsSorted[0];
 
-    const mappingSuggestion = buildMappingSuggestion(selectedIp, validTargetDomains);
-    const pluginSnippet = buildPluginSnippet(selectedIp, validTargetDomains);
-    const hostSnippet = buildHostSnippet(selectedIp, validTargetDomains);
+    const mappingSuggestion = buildMappingSuggestion(selectedMappingsSorted);
+    const pluginSnippet = buildPluginSnippet(selectedMappingsSorted);
+    const hostSnippet = buildHostSnippet(selectedMappingsSorted);
 
-    const gistSynced = await syncBestToGist(selectedIp, validTargetDomains);
-
-    const improveVsHybrid = best ? (best.delay - selected.row.delay) : null;
-    const improveVsDns = dnsBaseline ? (dnsBaseline.delay - selected.row.delay) : null;
-    const improveVsCurrent = hostmapBaseline ? (hostmapBaseline.delay - selected.row.delay) : null;
+    const gistSynced = await syncBestToGist(selectedMappingsSorted);
 
     const output = {
         seed_domains: seedDomains,
@@ -862,18 +896,14 @@ async function main() {
             local_stats: localSeedResult.stats,
             cloud_seed_count: remoteIps.length,
             target_dns_cf_count: targetDnsIps.length,
-            final_best: selected.row,
-            final_best_source: selected.source,
+            final_best: overallBest,
+            final_best_source: overallBest.source,
             comparison: {
-                hybrid_pool_best: best || null,
-                dns_baseline: dnsBaseline,
-                current_hostmap_baseline: hostmapBaseline,
-                improved_ms_vs_hybrid_pool: improveVsHybrid,
-                improved_ms_vs_dns: improveVsDns,
-                improved_ms_vs_current_hostmap: improveVsCurrent,
+                by_domain: domainComparisons,
                 rejected_candidates: rejectedOptions
             },
             final_ranking_top10: finalRanking.slice(0, 10),
+            selected_mappings: selectedMappingsSorted,
             mapping_suggestion: mappingSuggestion,
             gist_snippet_host: hostSnippet,
             gist_snippet_plugin: pluginSnippet,
@@ -892,12 +922,13 @@ async function main() {
 
     console.log("\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("┃ 📌 本轮优选总结");
-    console.log(`┃ 赢家来源: ${selected.source}`);
-    console.log(`┃ 最终IP: ${selected.row.ip}`);
-    console.log(`┃ 延迟/抖动/评分: ${selected.row.delay}ms / ${selected.row.jitter}ms / ${selected.row.score}`);
-    console.log(`┃ 对混合池第一名改善: ${formatDelta(improveVsHybrid)}`);
-    console.log(`┃ 对DNS基线改善: ${formatDelta(improveVsDns)}`);
-    console.log(`┃ 对当前HostMap改善: ${formatDelta(improveVsCurrent)}`);
+    console.log(`┃ 赢家来源: ${overallBest.source}`);
+    console.log(`┃ 最终IP: ${overallBest.ip}`);
+    console.log(`┃ 延迟/抖动/评分: ${overallBest.delay}ms / ${overallBest.jitter}ms / ${overallBest.score}`);
+    console.log(`┃ 本轮生效域名数: ${selectedMappingsSorted.length}/${validTargetDomains.length}`);
+    selectedMappingsSorted.forEach(item => {
+        console.log(`┃ - ${item.domain} => ${item.ip} (${item.delay}ms, ${item.source})`);
+    });
     if (invalidTargetDomains.length) {
         console.log("┃ 被淘汰域名:");
         for (const item of targetDomainDiagnostics.filter(d => d.status === "invalid")) {
@@ -911,8 +942,9 @@ async function main() {
         $persistentStore.write(JSON.stringify({
             updated_at: output.updated_at,
             target_domains: targetDomains,
-            best: selected.row,
-            best_source: selected.source
+            best: overallBest,
+            best_source: overallBest.source,
+            selected_mappings: selectedMappingsSorted
         }), STORE_BEST_KEY);
     } catch (error) {
         console.log(`⚠️ 本地缓存写入失败: ${error.message}`);
@@ -920,8 +952,8 @@ async function main() {
 
     notify(
         "✅ CF 本地大比拼完成",
-        `来源=${selected.source} | ${targetDomains[0]}`,
-        `${selected.row.ip} | ${selected.row.delay}ms | score=${selected.row.score}`
+        `来源=${overallBest.source} | 生效域名=${selectedMappingsSorted.length}`,
+        `${overallBest.ip} | ${overallBest.delay}ms | score=${overallBest.score}`
     );
 
     console.log("🏁 执行完成");
