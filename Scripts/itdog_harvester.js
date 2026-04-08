@@ -367,12 +367,12 @@ function buildMappingSuggestion(bestIp, targets) {
     return targets.map(domainName => ({
         domain: domainName,
         ip: bestIp,
-        host: `${domainName} = ${bestIp}, use-in-proxy=true`
+        host: `${domainName} = ${bestIp}`
     }));
 }
 
 function buildPluginSnippet(bestIp, targets) {
-    const lines = targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`);
+    const lines = targets.map(domainName => `${domainName} = ${bestIp}`);
     return [
         "[Host]",
         ...lines,
@@ -381,11 +381,11 @@ function buildPluginSnippet(bestIp, targets) {
 }
 
 function buildHostSnippet(bestIp, targets) {
-    return targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`).join("\n");
+    return targets.map(domainName => `${domainName} = ${bestIp}`).join("\n");
 }
 
 function buildGeneratedPlugin(bestIp, targets) {
-    const hostLines = targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`).join("\n");
+    const hostLines = targets.map(domainName => `${domainName} = ${bestIp}`).join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
