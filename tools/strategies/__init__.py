@@ -12,6 +12,7 @@ from .base import BaseHarvester, StrategyResult
 from .dns_harvester import DNSHarvester
 from .itdog_harvester import ITDogHarvester
 from .location_aware_itdog_harvester import LocationAwareITDogHarvester
+from .public_repo_harvester import PublicRepoHarvester
 
 __all__ = [
     "BaseHarvester",
@@ -19,4 +20,5 @@ __all__ = [
     "DNSHarvester",
     "ITDogHarvester",
     "LocationAwareITDogHarvester",
+    "PublicRepoHarvester",
 ]

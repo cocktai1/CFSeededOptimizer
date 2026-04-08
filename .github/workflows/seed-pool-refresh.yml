@@ -70,7 +70,9 @@ jobs:
       CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS || 'time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com' }}
       CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS || '12' }}
       CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT || '80' }}
-      CF_HARVEST_STRATEGIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.enable_location_aware == 'false') && 'dns' || vars.CF_HARVEST_STRATEGIES || 'dns,itdog_location' }}
+      CF_HARVEST_STRATEGIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.enable_location_aware == 'false') && 'dns,public_repo' || vars.CF_HARVEST_STRATEGIES || 'dns,itdog_location,public_repo' }}
+      CF_PUBLIC_REPO_URLS: ${{ vars.CF_PUBLIC_REPO_URLS || 'https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/bestcf.txt' }}
+      CF_PUBLIC_REPO_TIMEOUT: ${{ vars.CF_PUBLIC_REPO_TIMEOUT || '6' }}
       CF_HARVEST_CITY: ${{ github.event.inputs.city || vars.CF_HARVEST_CITY || '成都' }}
       CF_HARVEST_ISP: ${{ github.event.inputs.isp || vars.CF_HARVEST_ISP || '电信' }}
       CF_HARVEST_SPEED_PREFERENCE: ${{ github.event.inputs.speed_preference || vars.CF_HARVEST_SPEED_PREFERENCE || 'balanced' }}

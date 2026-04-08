@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List
 
-from strategies import DNSHarvester, ITDogHarvester, LocationAwareITDogHarvester, StrategyResult
+from strategies import DNSHarvester, ITDogHarvester, LocationAwareITDogHarvester, PublicRepoHarvester, StrategyResult
 
 DEFAULT_SEED_DOMAIN_GROUPS = {
     "tier1": [
@@ -54,6 +54,7 @@ STRATEGY_REGISTRY = {
     "dns": DNSHarvester,
     "itdog": ITDogHarvester,
     "itdog_location": LocationAwareITDogHarvester,
+    "public_repo": PublicRepoHarvester,
 }
 
 
@@ -73,6 +74,19 @@ def parse_domains(raw_value: str, limit: int) -> List[str]:
     items: List[str] = []
     for token in raw_value.replace("\n", ",").split(","):
         value = token.strip().lower()
+        if not value:
+            continue
+        if value not in items:
+            items.append(value)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def parse_url_list(raw_value: str, limit: int) -> List[str]:
+    items: List[str] = []
+    for token in raw_value.replace("\n", ",").split(","):
+        value = token.strip()
         if not value:
             continue
         if value not in items:
@@ -180,7 +194,18 @@ def main() -> int:
     parser.add_argument(
         "--strategies",
         default=os.environ.get("CF_HARVEST_STRATEGIES", "dns"),
-        help="Comma-separated strategy names (dns, itdog, itdog_location). Default: dns",
+        help="Comma-separated strategy names (dns, itdog, itdog_location, public_repo). Default: dns",
+    )
+    parser.add_argument(
+        "--public-repo-urls",
+        default=os.environ.get("CF_PUBLIC_REPO_URLS", "https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/bestcf.txt"),
+        help="Comma/newline separated public IP list URLs for strategy public_repo",
+    )
+    parser.add_argument(
+        "--public-repo-timeout",
+        type=int,
+        default=int(os.environ.get("CF_PUBLIC_REPO_TIMEOUT", "6")),
+        help="HTTP timeout (seconds) for public repo fetch. Default: 6",
     )
     parser.add_argument(
         "--city",
@@ -247,6 +272,14 @@ def main() -> int:
                     speed_preference=args.speed_preference,
                     network_type=args.network_type,
                     prefer_fresh=args.prefer_fresh,
+                )
+            elif strategy_name == "public_repo":
+                public_repo_urls = parse_url_list(args.public_repo_urls, 20)
+                harvester = harvester_class(
+                    max_seed_domains=args.max_seed_domains,
+                    max_ips=args.seed_pool_limit,
+                    source_urls=public_repo_urls,
+                    timeout_sec=args.public_repo_timeout,
                 )
             else:
                 harvester = harvester_class(max_seed_domains=args.max_seed_domains, max_ips=args.seed_pool_limit)
