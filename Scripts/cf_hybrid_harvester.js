@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v3";
+const SCRIPT_VERSION = "2026-04-09.v4";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -192,6 +192,15 @@ function normalizeProbePathList(value) {
         .slice(0, 4);
 }
 
+function responseLooksBlocked(statusCode, bodyText) {
+    const status = Number(statusCode || 0);
+    const text = String(bodyText || "").toLowerCase();
+    if (status >= 400) return true;
+    if (text.includes("error 1034") || text.includes("edge ip restricted")) return true;
+    if (text.includes("403 - forbidden") || text.includes("forbidden")) return true;
+    return false;
+}
+
 async function fetchRemoteSeedPool(url) {
     if (!url) return null;
     return new Promise(resolve => {
@@ -280,7 +289,9 @@ async function runSingleProbe(ipAddress, hostName, pathName) {
     const headers = { "Host": hostName, "User-Agent": "Loon-CF-Hybrid" };
     return new Promise(resolve => {
         $httpClient.get({ url, headers, timeout: PROBE_TIMEOUT, node: "DIRECT", "binary-mode": true }, (err, resp, data) => {
-            if (err || !resp || Number(resp.status || 0) >= 500 || !data) {
+            const status = Number(resp && resp.status ? resp.status : 0);
+            const bodyText = typeof data === "string" ? data : "";
+            if (err || !resp || responseLooksBlocked(status, bodyText) || !data) {
                 resolve({ ok: false, kbps: 0 });
                 return;
             }
@@ -346,14 +357,45 @@ function ping(ipAddress, hostName) {
         const startedAt = Date.now();
         const url = `http://${ipAddress}/cdn-cgi/trace`;
         const headers = { "Host": hostName, "User-Agent": "Loon-CF-Hybrid" };
-        $httpClient.get({ url, headers, timeout: Math.max(1500, Math.min(4000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp) => {
-            if (err || !resp || Number(resp.status || 0) >= 500) {
+        $httpClient.get({ url, headers, timeout: Math.max(1500, Math.min(4000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
+            const status = Number(resp && resp.status ? resp.status : 0);
+            const bodyText = typeof data === "string" ? data : "";
+            if (err || !resp || responseLooksBlocked(status, bodyText)) {
                 resolve({ ip: ipAddress, delay: 9999 });
                 return;
             }
             resolve({ ip: ipAddress, delay: Date.now() - startedAt });
         });
     });
+}
+
+async function verifyIpAccessibleForDomain(ipAddress, domainName) {
+    const checks = ["/", "/cdn-cgi/trace"];
+    for (const pathName of checks) {
+        const url = `http://${ipAddress}${pathName}`;
+        const headers = { "Host": domainName, "User-Agent": "Loon-CF-Hybrid" };
+        const ok = await new Promise(resolve => {
+            $httpClient.get({ url, headers, timeout: Math.max(2000, Math.min(5000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
+                if (err || !resp) {
+                    resolve(false);
+                    return;
+                }
+                const status = Number(resp.status || 0);
+                const bodyText = typeof data === "string" ? data : "";
+                resolve(!responseLooksBlocked(status, bodyText));
+            });
+        });
+        if (!ok) return false;
+    }
+    return true;
+}
+
+async function verifyIpAccessibleForDomains(ipAddress, domains) {
+    for (const domainName of domains) {
+        const ok = await verifyIpAccessibleForDomain(ipAddress, domainName);
+        if (!ok) return false;
+    }
+    return true;
 }
 
 async function samplePing(ipAddress, hostName) {
@@ -728,8 +770,33 @@ async function main() {
     if (dnsBaseline) options.push({ source: "dns_baseline", row: dnsBaseline });
     if (hostmapBaseline) options.push({ source: "current_hostmap", row: hostmapBaseline });
     options.sort((a, b) => a.row.score - b.row.score);
+    let selected = null;
+    const rejectedOptions = [];
+    for (const option of options) {
+        const ipAddress = option && option.row ? option.row.ip : "";
+        if (!ipAddress) continue;
+        const accessible = await verifyIpAccessibleForDomains(ipAddress, validTargetDomains);
+        if (accessible) {
+            selected = option;
+            break;
+        }
+        rejectedOptions.push({ source: option.source, ip: ipAddress, reason: "access_blocked_or_403_1034" });
+    }
 
-    const selected = options[0];
+    if (!selected) {
+        console.log("❌ 所有候选IP均未通过可访问性校验，已停止写入，避免把不可访问IP写入HostMap。");
+        if (rejectedOptions.length) {
+            rejectedOptions.forEach(item => console.log(`  - ${item.source} ${item.ip}: ${item.reason}`));
+        }
+        $notification.post({
+            title: "⚠️ CF优选已拦截不可访问IP",
+            message: "候选IP触发403/1034等限制，已停止更新HostMap",
+            sound: "default"
+        });
+        $done();
+        return;
+    }
+
     const selectedIp = selected.row.ip;
 
     const mappingSuggestion = buildMappingSuggestion(selectedIp, validTargetDomains);
@@ -768,7 +835,8 @@ async function main() {
                 current_hostmap_baseline: hostmapBaseline,
                 improved_ms_vs_hybrid_pool: improveVsHybrid,
                 improved_ms_vs_dns: improveVsDns,
-                improved_ms_vs_current_hostmap: improveVsCurrent
+                improved_ms_vs_current_hostmap: improveVsCurrent,
+                rejected_candidates: rejectedOptions
             },
             final_ranking_top10: finalRanking.slice(0, 10),
             mapping_suggestion: mappingSuggestion,
