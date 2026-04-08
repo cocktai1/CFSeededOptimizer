@@ -1,0 +1,31 @@
+#!name=CF ITDog 采集工具
+#!desc=从 ITDog 官网采集 CF IP，生成候选池。手动按需运行，不自动触发，对手机零负载。采集完成后输出 seed_pool.json 供推送。
+#!openUrl=https://github.com/cocktai1/CFSeededOptimizer
+#!author=cocktai
+#!tag=Cloudflare, IP优选, 采集
+#!system=ios
+
+[Argument]
+# 无需配置参数 - 使用脚本内置的三梯队默认种子
+
+[Script]
+# 本插件支持以下触发方式（都不自动执行，完全手动控制）
+# 方式1: Loon 主页长按插件图标 → 运行脚本
+# 方式2: 通知栏点击"运行"按钮（如已开启消息通知）
+# 方式3: 通过远程脚本 URL 手动调用
+#
+# 执行流程：
+# 1. 按顺序查询每个种子域名到 ITDog API
+# 2. 提取 CF IP 地址（过滤 15 条 CF CIDR 范围）
+# 3. 去重聚合，生成 seed_pool.json 格式
+# 4. 输出 JSON 到控制台（供复制）
+# 5. 存储到 Loon 本地缓存（用于后续导入）
+#
+# 推送方式选择：
+# 选项 A: 复制输出的 JSON → 创建/编辑 GitHub Gist → json_data.json
+# 选项 B: 复制输出的 JSON → 本地转发到 Git，执行 data/seed_pool.json 提交
+# 选项 C: 直接使用本地缓存（不推送）作为后备种子池
+
+https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/itdog_harvester.js
+
+[MITM]

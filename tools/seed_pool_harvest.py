@@ -1,41 +1,26 @@
 #!/usr/bin/env python3
-"""Harvest Cloudflare seed IPs from a list of seed domains.
+"""Harvest Cloudflare seed IPs using pluggable strategies.
 
-This script is designed for GitHub Actions or any server-side scheduler.
-It resolves A records for each seed domain, filters Cloudflare IPv4 ranges,
-then emits a compact JSON payload for downstream consumers.
+Supports multiple harvesting strategies:
+- 'dns': DNS resolution via socket API (default, stable, server-side)
+- 'itdog': Scraping from ITDog portal (supplementary, local-side)
+
+This script is designed for GitHub Actions or any scheduler.
+It outputs a compact JSON payload for downstream consumers.
 """
 
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import os
-import socket
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
-CF_IPV4_CIDRS = [
-    "103.21.244.0/22",
-    "103.22.200.0/22",
-    "103.31.4.0/22",
-    "104.16.0.0/13",
-    "104.24.0.0/14",
-    "108.162.192.0/18",
-    "131.0.72.0/22",
-    "141.101.64.0/18",
-    "162.158.0.0/15",
-    "172.64.0.0/13",
-    "173.245.48.0/20",
-    "188.114.96.0/20",
-    "190.93.240.0/20",
-    "197.234.240.0/22",
-    "198.41.128.0/17",
-]
+from strategies import DNSHarvester, ITDogHarvester, StrategyResult
 
 DEFAULT_SEED_DOMAIN_GROUPS = {
     "tier1": [
@@ -64,6 +49,12 @@ DEFAULT_SEED_DOMAINS = [
     *DEFAULT_SEED_DOMAIN_GROUPS["tier3"],
 ]
 
+# Strategy registry: maps strategy name to harvester class
+STRATEGY_REGISTRY = {
+    "dns": DNSHarvester,
+    "itdog": ITDogHarvester,
+}
+
 
 @dataclass(frozen=True)
 class HarvestResult:
@@ -73,6 +64,8 @@ class HarvestResult:
     ips: List[str]
     updated_at: int
     source: str = "github-actions"
+    strategies: List[str] = field(default_factory=list)  # Added: track which strategies were used
+    extended: dict = field(default_factory=dict)  # Added: extensibility for future metadata
 
 
 def parse_domains(raw_value: str, limit: int) -> List[str]:
@@ -88,82 +81,111 @@ def parse_domains(raw_value: str, limit: int) -> List[str]:
     return items
 
 
-def load_cf_networks() -> List[ipaddress.IPv4Network]:
-    return [ipaddress.ip_network(cidr) for cidr in CF_IPV4_CIDRS]
+def merge_results(results: List[StrategyResult]) -> HarvestResult:
+    """Merge results from multiple harvesting strategies.
+    
+    Combines IPs from all strategies, deduplicates, and tracks
+    which strategies contributed IPs.
+    """
+    all_domains = []
+    all_valid = []
+    all_invalid = []
+    all_ips = []
+    strategy_names = []
 
+    # Collect seed domains (from first strategy with valid count)
+    for result in results:
+        if result.seed_domains:
+            all_domains = result.seed_domains
+            break
 
-def is_cloudflare_ipv4(ip_value: str, networks: Iterable[ipaddress.IPv4Network]) -> bool:
-    try:
-        ip_obj = ipaddress.ip_address(ip_value)
-    except ValueError:
-        return False
-    if ip_obj.version != 4:
-        return False
-    return any(ip_obj in network for network in networks)
+    # Merge valid/invalid domains and IPs
+    seen_domains = set()
+    for result in results:
+        strategy_names.append(result.strategy_name)
+        
+        for domain in result.valid_domains:
+            if domain not in seen_domains:
+                all_valid.append(domain)
+                seen_domains.add(domain)
+        
+        for domain in result.invalid_domains:
+            if domain not in seen_domains:
+                all_invalid.append(domain)
+                seen_domains.add(domain)
+        
+        all_ips.extend(result.ips)
 
+    # Deduplicate IPs
+    seen_ips = set()
+    unique_ips = []
+    for ip in all_ips:
+        if ip not in seen_ips:
+            unique_ips.append(ip)
+            seen_ips.add(ip)
 
-def resolve_ipv4s(domain: str) -> List[str]:
-    ips = []
-    try:
-        infos = socket.getaddrinfo(domain, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return []
-
-    for entry in infos:
-        sockaddr = entry[4]
-        if not sockaddr:
-            continue
-        ip_value = sockaddr[0]
-        if ip_value not in ips:
-            ips.append(ip_value)
-    return ips
-
-
-def unique(items: Iterable[str]) -> List[str]:
-    seen = set()
-    result = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
-def harvest(seed_domains: List[str], max_ips: int) -> HarvestResult:
-    networks = load_cf_networks()
-    valid_domains = []
-    invalid_domains = []
-    pool = []
-
-    for domain in seed_domains:
-        resolved = resolve_ipv4s(domain)
-        cf_ips = [ip for ip in resolved if is_cloudflare_ipv4(ip, networks)]
-        if cf_ips:
-            valid_domains.append(domain)
-            pool.extend(cf_ips)
-        else:
-            invalid_domains.append(domain)
+    # Build extended metadata
+    extended = {
+        "strategies": strategy_names,
+        "strategy_count": len(results),
+        "strategy_details": [
+            {
+                "name": r.strategy_name,
+                "ips": len(r.ips),
+                "elapsed_ms": r.elapsed_ms,
+                "error": r.error if r.error else None,
+            }
+            for r in results
+        ],
+    }
 
     return HarvestResult(
-        seed_domains=seed_domains,
-        valid_seed_domains=valid_domains,
-        invalid_seed_domains=invalid_domains,
-        ips=unique(pool)[:max_ips],
+        seed_domains=all_domains,
+        valid_seed_domains=all_valid,
+        invalid_seed_domains=all_invalid,
+        ips=unique_ips,
         updated_at=int(time.time()),
+        strategies=strategy_names,
+        extended=extended,
     )
 
 
+def get_harvester_class(strategy_name: str):
+    """Get harvester class by name."""
+    if strategy_name not in STRATEGY_REGISTRY:
+        raise ValueError(f"Unknown strategy: {strategy_name}. Available: {', '.join(STRATEGY_REGISTRY.keys())}")
+    return STRATEGY_REGISTRY[strategy_name]
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Harvest Cloudflare seed IPs from seed domains.")
+    parser = argparse.ArgumentParser(description="Harvest Cloudflare seed IPs using pluggable strategies.")
     parser.add_argument(
         "--seed-domains",
         default=os.environ.get("CF_SEED_DOMAINS", ",".join(DEFAULT_SEED_DOMAINS)),
         help="Comma/newline separated seed domains",
     )
-    parser.add_argument("--max-seed-domains", type=int, default=int(os.environ.get("CF_MAX_SEED_DOMAINS", "12")), help="Maximum seed domains to process")
-    parser.add_argument("--seed-pool-limit", type=int, default=int(os.environ.get("CF_SEED_POOL_LIMIT", "80")), help="Maximum number of seed IPs")
-    parser.add_argument("--output", default=os.environ.get("CF_OUTPUT_FILE", "data/seed_pool.json"), help="Output JSON file")
+    parser.add_argument(
+        "--max-seed-domains",
+        type=int,
+        default=int(os.environ.get("CF_MAX_SEED_DOMAINS", "12")),
+        help="Maximum seed domains to process",
+    )
+    parser.add_argument(
+        "--seed-pool-limit",
+        type=int,
+        default=int(os.environ.get("CF_SEED_POOL_LIMIT", "80")),
+        help="Maximum number of seed IPs",
+    )
+    parser.add_argument(
+        "--strategies",
+        default=os.environ.get("CF_HARVEST_STRATEGIES", "dns"),
+        help="Comma-separated strategy names (dns, itdog). Default: dns",
+    )
+    parser.add_argument(
+        "--output",
+        default=os.environ.get("CF_OUTPUT_FILE", "data/seed_pool.json"),
+        help="Output JSON file",
+    )
     args = parser.parse_args()
 
     seed_domains = parse_domains(args.seed_domains, args.max_seed_domains)
@@ -171,15 +193,47 @@ def main() -> int:
         print("CF_SEED_DOMAINS is empty", file=sys.stderr)
         return 1
 
-    result = harvest(seed_domains, args.seed_pool_limit)
+    # Parse strategy names
+    strategy_names = [s.strip().lower() for s in args.strategies.split(",") if s.strip()]
+    if not strategy_names:
+        strategy_names = ["dns"]
+
+    # Validate strategies
+    for strategy_name in strategy_names:
+        if strategy_name not in STRATEGY_REGISTRY:
+            print(f"❌ Unknown strategy: {strategy_name}. Available: {', '.join(STRATEGY_REGISTRY.keys())}", file=sys.stderr)
+            return 1
+
+    # Execute strategies
+    results = []
+    for strategy_name in strategy_names:
+        try:
+            harvester_class = get_harvester_class(strategy_name)
+            harvester = harvester_class(max_seed_domains=args.max_seed_domains, max_ips=args.seed_pool_limit)
+            result = harvester.harvest(seed_domains)
+            results.append(result)
+            print(f"✓ {strategy_name}: {len(result.ips)} IPs in {result.elapsed_ms}ms", file=sys.stderr)
+            if result.error:
+                print(f"  ⚠️  {result.error}", file=sys.stderr)
+        except Exception as e:
+            print(f"❌ Strategy {strategy_name} failed: {e}", file=sys.stderr)
+            return 1
+
+    # Merge results from all strategies
+    merged = merge_results(results)
+
+    # Write output
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    output_path.write_text(json.dumps(asdict(merged), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    print(f"updated_at={result.updated_at}")
-    print(f"seed_domains={len(result.seed_domains)} valid={len(result.valid_seed_domains)} invalid={len(result.invalid_seed_domains)} ips={len(result.ips)}")
-    if result.invalid_seed_domains:
-        print("invalid=" + ",".join(result.invalid_seed_domains))
+    # Summary
+    print(f"updated_at={merged.updated_at}")
+    print(f"seed_domains={len(merged.seed_domains)} valid={len(merged.valid_seed_domains)} invalid={len(merged.invalid_seed_domains)} ips={len(merged.ips)}")
+    if merged.invalid_seed_domains:
+        print("invalid=" + ",".join(merged.invalid_seed_domains))
+    if merged.strategies:
+        print("strategies=" + ",".join(merged.strategies))
 
     return 0
 

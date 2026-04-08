@@ -108,6 +108,7 @@ CFSeededOptimizer/
 | `CF_SEED_DOMAINS` | `time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com` | 三梯队默认种子域名，支持逗号或换行 |
 | `CF_MAX_SEED_DOMAINS` | `12` | 种子域名数量上限 |
 | `CF_SEED_POOL_LIMIT` | `80` | 候选池上限 |
+| `CF_HARVEST_STRATEGIES` | `dns` | 采集策略，支持 `dns`、`itdog`、或 `dns,itdog` (多策略合并) |
 
 ### 工作流默认行为
 
@@ -116,6 +117,217 @@ CFSeededOptimizer/
 - 生成结果固定写入 [data/seed_pool.json](data/seed_pool.json)
 - Loon 端优先使用本地缓存种子池，缓存失效或为空时再读取远端 JSON
 - GitHub Actions 的收集任务默认 15 分钟超时，避免个别网络抖动拖住整轮任务
+
+## 采集策略系统
+
+### 架构设计
+
+从 v2.0 开始，CFSeededOptimizer 支持**可插拔的多策略采集系统**。不同的采集方案可以独立运行或互补协作：
+
+```
+Tier 1 采集系统（多策略引擎）
+├─ 策略 A: DNS 采集器
+│   └─ 执行环境：GitHub Actions（云端定时）
+│   └─ 特点：✓ 稳定、✓ 低负载、✓ 自动化
+├─ 策略 B: ITDog 爬虫
+│   ├─ 执行环境 B1：Loon 本地（手动按需）
+│   │  └─ 特点：✓ 补充、✓ 无 GA 负担、✓ 用户掌控
+│   └─ 执行环境 B2：GitHub Actions（可选）
+│      └─ 特点：✓ 定期更新、✓ 自动推送
+└─ 策略 C：未来扩展（ITDog API、Shodan 等）
+
+     ↓（所有策略产出统一格式）
+     
+seed_pool.json（合并后的候选池）
+     ↓
+Loon 手机端（Tier 2 优选引擎）
+```
+
+### 策略说明
+
+#### 1️⃣ DNS 采集器（DNS Harvester）
+
+**实现文件**：[tools/strategies/dns_harvester.py](tools/strategies/dns_harvester.py)
+
+**特点**：
+- 使用 socket API 进行 DNS 查询，稳定可靠
+- 在 GitHub Actions 中定期执行（每 12 小时）
+- 无手机负载
+- 是项目的主要采集来源
+
+**使用方式**：
+```bash
+# GitHub Actions 默认执行
+python tools/seed_pool_harvest.py --strategies dns
+
+# 或本地测试
+python tools/seed_pool_harvest.py --strategies dns --seed-domains time.cloudflare.com,speed.cloudflare.com
+```
+
+#### 2️⃣ ITDog 爬虫（ITDog Harvester）
+
+**实现文件**：
+- Python 策略：[tools/strategies/itdog_harvester.py](tools/strategies/itdog_harvester.py)
+- Loon 脚本：[Scripts/itdog_harvester.js](Scripts/itdog_harvester.js)
+
+**特点**：
+- 爬取 ITDog 官网的 CF IP 信息
+- 补充 DNS 采集不足的候选池
+- **本地手动运行**，无 GA 依赖，对手机低负载（Crowdsourced）
+- 支持在 Loon 中一键触发，适合按需补充
+
+**两种运行模式**：
+
+**模式 A：Loon 本地手动采集** ⭐ 推荐（用户掌控）
+
+1. 在 Loon 中安装 [cf_itdog_harvester.plugin](Plugins/cf_itdog_harvester.plugin)
+2. Loon 主页长按插件图标 → **运行脚本**
+3. 脚本在本地执行，查询 ITDog API，生成 `seed_pool.json` 格式
+4. 输出 JSON 到控制台（供复制）
+5. 选择推送方式：
+   - **选项 A**：复制输出 JSON → GitHub Gist 创建/编辑 → `json_data.json`
+   - **选项 B**：复制输出 JSON → 本地执行 `git` 命令提交 → `data/seed_pool.json`
+   - **选项 C**：保留在本地缓存，不推送（用于后备种子池）
+
+**模式 B：GitHub Actions 定期采集**（可选）
+
+```bash
+# 在 GitHub Actions Secrets 中配置
+CF_HARVEST_STRATEGIES=dns,itdog  # 合并两个策略
+
+# 或仅 ITDog
+CF_HARVEST_STRATEGIES=itdog
+```
+
+执行后自动合并两个策略的结果，产出更丰富的候选池。
+
+### 策略选择建议
+
+| 场景 | 推荐方案 | 说明 |
+| --- | --- | --- |
+| 新用户、求稳定 | DNS 采集器（默认）| 已在 GA 中自动运行，无需配置 |
+| 想要更多补充候选 | DNS + Loon ITDog 手动 | 定期 GA DNS，按需 Loon ITDog 补充 |
+| 想要完全自动化 | GA 双策略（DNS+ITDog） | 配置 `CF_HARVEST_STRATEGIES=dns,itdog`，自动合并 |
+| 追求最大灵活性 | 纯 ITDog 本地手动 | 禁用 GA，完全由用户在 Loon 中按需采集 |
+| 追求最小手机负载 | GA DNS（自动）| 最轻量方案，Loon 只做优选不做采集 |
+
+### 多策略合并规则
+
+当运行多个策略时，系统会按以下规则合并结果：
+
+1. **IPs 去重**：多个策略产生的重复 IP 自动合并
+2. **域名验证**：统计所有策略的有效/无效域名
+3. **元数据记录**：在 `extended` 字段记录各策略耗时和贡献度
+4. **格式统一**：最终都输出标准 `seed_pool.json` 格式
+
+**合并输出示例**：
+```json
+{
+  "seed_domains": [...],
+  "valid_seed_domains": [...],
+  "invalid_seed_domains": [...],
+  "ips": [...],
+  "updated_at": 1712500000,
+  "source": "github-actions",
+  "strategies": ["dns", "itdog"],
+  "extended": {
+    "strategies": ["dns", "itdog"],
+    "strategy_count": 2,
+    "strategy_details": [
+      {"name": "dns", "ips": 45, "elapsed_ms": 325},
+      {"name": "itdog", "ips": 32, "elapsed_ms": 1200}
+    ]
+  }
+}
+```
+
+## 本地 ITDog 采集工具使用指南
+
+### 快速开始
+
+1. **安装插件**
+
+   在 Loon 中添加订阅或本地导入：
+   ```
+   https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Plugins/cf_itdog_harvester.plugin
+   ```
+   或复制 [cf_itdog_harvester.plugin](Plugins/cf_itdog_harvester.plugin) 内容到本地
+
+2. **运行采集**
+
+   - Loon 主页长按插件图标
+   - 选择 **▶ 运行脚本**
+   - 等待完成（通常 10-30 秒）
+   - 通知栏会提示结果摘要
+
+3. **推送结果**
+
+   采集完成后，你会看到 `seed_pool.json` 的完整 JSON 输出。选择下列方式之一推送：
+
+   **方式 1：推送到 GitHub Gist**（推荐）
+   ```
+   1. 复制 JSON 输出
+   2. 创建或编辑 GitHub Gist，保存为 json_data.json
+   3. 在 cf_seeded_optimizer.plugin 中配置 CF_GIST_ID 和 CF_TOKEN
+   4. Loon 下次运行时会自动拉取这个 Gist
+   ```
+
+   **方式 2：推送到 GitHub 仓库**（Git）
+   ```
+   1. 复制 JSON 输出，保存到本地 data/seed_pool.json
+   2. 执行：git add data/seed_pool.json && git commit -m "update: ITDog harvest" && git push
+   3. GitHub Actions 和 Loon 都会自动拉取更新
+   ```
+
+   **方式 3：保留本地缓存**（不推送）
+   ```
+   JSON 已保存到 Loon 本地缓存键 CF_ITDOG_HARVEST_RESULT
+   下次网络切换时会自动用到作为兜底
+   ```
+
+### 采集日志示例
+
+```
+🚀 Starting ITDog harvest for 12 seed domains...
+
+[1/12] Querying: time.cloudflare.com
+  ✓ ITDog API for time.cloudflare.com: 3 IPs
+  → Found 3 CF IPs
+
+[2/12] Querying: speed.cloudflare.com
+  ✓ ITDog API for speed.cloudflare.com: 5 IPs
+  → Found 5 CF IPs
+
+...
+
+✅ Harvest complete:
+  📊 Seed domains: 12
+  ✓ Valid: 11
+  ✗ Invalid: 1
+  🔗 Unique IPs: 45
+  📅 Updated: 2024-04-08T10:30:00Z
+```
+
+### 常见问题
+
+**Q: 采集需要自己手动运行吗？**
+
+A: 是的。B 策略（ITDog）完全由用户手动控制，这样对手机负载最小。如果想自动化，可在 GA 中配置 `CF_HARVEST_STRATEGIES=dns,itdog`。
+
+**Q: 如果 ITDog 网站掉了怎么办？**
+
+A: 脚本会自动降级到 DNS 直查（`_resolve_domain_direct`），不会中断。多策略的好处就是容错更好。
+
+**Q: 多久采集一次比较合适？**
+
+A: 建议按需。可以在以下场景手动触发：
+- 周一/周末（ISP 路由变化）
+- 切换网络后（Wi-Fi/4G/5G）
+- 感觉延迟变化时
+
+**Q: 能和 GA DNS 策略一起合并吗？**
+
+A: 完全支持。如果既启用 GA 的 DNS，又手动运行了 ITDog，推送到同一个 Gist 或文件时会自动合并去重。
 
 ## Loon 侧使用流程
 
@@ -294,10 +506,19 @@ CFSeededOptimizer/
 ## 关键文件
 
 - [README.md](README.md)
-- [seed-pool-refresh.yml](.github/workflows/seed-pool-refresh.yml)
-- [seed_pool_harvest.py](tools/seed_pool_harvest.py)
-- [cf_seeded_optimizer.plugin](Plugins/cf_seeded_optimizer.plugin)
-- [cf_seeded_optimizer_lite.plugin](Plugins/cf_seeded_optimizer_lite.plugin)
+- [.github/workflows/seed-pool-refresh.yml](.github/workflows/seed-pool-refresh.yml)
+- **核心采集框架**
+  - [tools/seed_pool_harvest.py](tools/seed_pool_harvest.py) - 多策略采集调度器
+  - [tools/strategies/base.py](tools/strategies/base.py) - 策略基类
+- **采集策略实现**
+  - [tools/strategies/dns_harvester.py](tools/strategies/dns_harvester.py) - DNS 采集器
+  - [tools/strategies/itdog_harvester.py](tools/strategies/itdog_harvester.py) - ITDog 采集器
+- **Loon 脚本和插件**
+  - [Scripts/cf_seeded_optimize.js](Scripts/cf_seeded_optimize.js) - 标准优选脚本
+  - [Scripts/itdog_harvester.js](Scripts/itdog_harvester.js) - ITDog 本地爬虫脚本
+  - [Plugins/cf_seeded_optimizer.plugin](Plugins/cf_seeded_optimizer.plugin) - 标准优选插件
+  - [Plugins/cf_seeded_optimizer_lite.plugin](Plugins/cf_seeded_optimizer_lite.plugin) - Lite 插件
+  - [Plugins/cf_itdog_harvester.plugin](Plugins/cf_itdog_harvester.plugin) - ITDog 采集插件
 - [cf_seeded_optimize.js](Scripts/cf_seeded_optimize.js)
 
 ## 备注
