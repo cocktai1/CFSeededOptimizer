@@ -21,7 +21,7 @@ CF_SEED_POOL_LIMIT = input,"80",tag=输出IP池上限,desc=最终输出到结果
 CF_EVAL_ROUNDS = input,"3",tag=评估轮数,desc=每个候选IP的评估轮次
 CF_PING_SAMPLES = input,"4",tag=每轮采样次数,desc=单轮内每个候选IP采样次数
 CF_JITTER_WEIGHT = input,"0.9",tag=抖动权重,desc=评分中抖动惩罚系数
-CF_PROBE_PATH = input,"",tag=业务探针路径,desc=可选：例如 /emby/items/... 更贴近真实体验
+CF_PROBE_PATH = input,"/system/info/public,/web/index.html",tag=业务探针路径,desc=优先 /system/info/public，备选 /web/index.html；更贴近真实体验
 CF_PROBE_TIMEOUT = input,"6000",tag=探针超时(ms),desc=业务探针请求超时
 CF_MIN_PROBE_KBPS = input,"250",tag=探针最低速率(KB/s),desc=低于该速率会增加惩罚分
 

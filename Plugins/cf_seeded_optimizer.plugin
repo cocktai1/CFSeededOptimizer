@@ -26,7 +26,7 @@ CF_JITTER_WEIGHT = input,"0.9",tag=抖动权重,desc=评分中抖动系数，值
 CF_REQUIRE_BEAT_DNS = input,"on",tag=需显著优于DNS,desc=on/off：仅当候选IP显著优于DNS结果时才固化映射
 CF_DNS_MARGIN_MS = input,"80",tag=优于DNS阈值(ms),desc=候选IP需至少快于DNS最佳该值才切换
 CF_MAX_ACCEPT_DELAY = input,"650",tag=最大可接受延迟(ms),desc=超过该延迟视为不适合固化映射
-CF_PROBE_PATH = input,"",tag=业务探针路径,desc=可选：如 /emby/items/...，用于更贴近真实业务测速
+CF_PROBE_PATH = input,"/system/info/public,/web/index.html",tag=业务探针路径,desc=优先 /system/info/public，备选 /web/index.html；更贴近真实业务测速
 CF_PROBE_TIMEOUT = input,"6000",tag=探针超时(ms),desc=业务探针请求超时
 CF_MIN_PROBE_KBPS = input,"250",tag=探针最低速率(KB/s),desc=启用探针时低于该速率不固化映射
 CF_BAD_RUN_PAUSE_MINUTES = input,"20",tag=劣化退避(分钟),desc=连续劣化时暂停切换，减少反复抖动

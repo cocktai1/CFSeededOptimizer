@@ -30,7 +30,7 @@ const MAX_IPS = Math.min(160, Math.max(20, Number.parseInt(String(ARG.CF_SEED_PO
 const EVAL_ROUNDS = Math.min(5, Math.max(1, Number.parseInt(String(ARG.CF_EVAL_ROUNDS || "3"), 10) || 3));
 const PING_SAMPLES = Math.min(6, Math.max(2, Number.parseInt(String(ARG.CF_PING_SAMPLES || "4"), 10) || 4));
 const JITTER_WEIGHT = Number.parseFloat(String(ARG.CF_JITTER_WEIGHT || "0.9")) || 0.9;
-const PROBE_PATH = String(ARG.CF_PROBE_PATH || "").trim();
+const PROBE_PATH = String(ARG.CF_PROBE_PATH || "/system/info/public,/web/index.html").trim();
 const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10) || 6000;
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
 
@@ -185,7 +185,7 @@ function normalizeProbePath(value) {
 function normalizeProbePathList(value) {
     if (!value) return [];
     return String(value)
-        .split(",")
+    .split(/[\n,]+/)
         .map(part => normalizeProbePath(part.trim()))
         .filter(Boolean)
         .slice(0, 4);
@@ -223,116 +223,47 @@ async function fetchDoHARecords(domainName) {
         }
     ];
 
-    const result = [];
-    for (const endpoint of endpoints) {
-        const ips = await new Promise(resolve => {
-            $httpClient.get({ url: endpoint.url, headers: endpoint.headers, timeout: 3000, node: "DIRECT" }, (err, resp, data) => {
-                if (err || !resp || resp.status !== 200 || !data) {
-                    resolve([]);
-                    return;
-                }
-                try {
-                    resolve(parseIPsFromAnyJSON(data));
-                } catch (error) {
-                    resolve([]);
-                }
-            });
+    const results = await Promise.all(endpoints.map(endpoint => new Promise(resolve => {
+        $httpClient.get({ url: endpoint.url, headers: endpoint.headers, timeout: 3000, node: "DIRECT" }, (err, resp, data) => {
+            if (err || !resp || resp.status !== 200 || !data) {
+                resolve([]);
+                return;
+            }
+            try {
+                resolve(parseIPsFromAnyJSON(data));
+            } catch (error) {
+                resolve([]);
+            }
         });
-        result.push(...ips);
-    }
-    return uniqueIPv4List(result);
+    })));
+    return uniqueIPv4List(results.flat());
 }
 
 async function queryITDogAPI(domainName) {
     const url = `${ITDOG_API_BASE}/api/lookup?domain=${encodeURIComponent(domainName)}`;
     return new Promise(resolve => {
         $httpClient.get(
-            {
-                url,
-                headers: {
-                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-                    "Accept": "application/json, text/plain, */*"
-                },
-                timeout: REQUEST_TIMEOUT,
-                node: "DIRECT"
-            },
-            (error, response, body) => {
-                if (error || !response || !body) {
-                    resolve({ ok: false, reason: error ? String(error) : "empty_response", ips: [] });
+            { url, timeout: 3500, node: "DIRECT" },
+            (err, resp, data) => {
+                if (err || !resp || !data) {
+                    resolve({ ok: false, ips: [], source: "error" });
                     return;
                 }
-                const status = Number(response.status || 0);
-                const text = String(body);
-                if (status >= 300 || text.trim().startsWith("<")) {
-                    resolve({ ok: false, reason: `http_${status || 0}_or_html`, ips: [] });
+                const bodyText = String(data);
+                if (bodyText.includes("<html") || bodyText.includes("403") || bodyText.includes("Access Denied")) {
+                    resolve({ ok: false, ips: [], source: "blocked" });
                     return;
                 }
                 try {
-                    const ips = parseIPsFromAnyJSON(text);
-                    resolve({ ok: true, reason: "ok", ips });
-                } catch (parseError) {
-                    resolve({ ok: false, reason: `parse_error:${parseError.message}`, ips: [] });
+                    const payload = JSON.parse(bodyText);
+                    const ips = parseIPsFromAnyJSON(payload);
+                    resolve({ ok: ips.length > 0, ips, source: "itdog" });
+                } catch (error) {
+                    resolve({ ok: false, ips: [], source: "parse_error" });
                 }
             }
         );
     });
-}
-
-function calcStats(delays) {
-    const sorted = [...delays].sort((a, b) => a - b);
-    if (!sorted.length) {
-        return { delay: 9999, jitter: 9999, successRate: 0 };
-    }
-    const sum = sorted.reduce((acc, item) => acc + item, 0);
-    const mean = sum / sorted.length;
-    const variance = sorted.reduce((acc, item) => acc + (item - mean) * (item - mean), 0) / sorted.length;
-    return {
-        delay: Math.round(mean),
-        jitter: Math.round(Math.sqrt(variance)),
-        successRate: sorted.length / PING_SAMPLES
-    };
-}
-
-function calcScore(metrics) {
-    return Math.round(metrics.delay + metrics.jitter * JITTER_WEIGHT + (1 - metrics.successRate) * 800);
-}
-
-function ping(ipAddress, hostName) {
-    const begin = Date.now();
-    return new Promise(resolve => {
-        $httpClient.get(
-            {
-                url: `http://${ipAddress}/cdn-cgi/trace`,
-                headers: { "Host": hostName, "User-Agent": "Loon-CF-Hybrid" },
-                timeout: 3500,
-                node: "DIRECT"
-            },
-            (err, resp) => {
-                if (err || !resp || Number(resp.status || 0) >= 500) {
-                    resolve(null);
-                    return;
-                }
-                resolve(Date.now() - begin);
-            }
-        );
-    });
-}
-
-async function samplePing(ipAddress, hostName) {
-    const tasks = [];
-    for (let index = 0; index < PING_SAMPLES; index += 1) {
-        tasks.push(new Promise(resolve => setTimeout(() => resolve(ping(ipAddress, hostName)), index * 90)));
-    }
-    const delays = (await Promise.all(tasks)).filter(value => typeof value === "number" && value > 0);
-    const stats = calcStats(delays);
-    return {
-        ip: ipAddress,
-        delay: stats.delay,
-        jitter: stats.jitter,
-        successRate: Number(stats.successRate.toFixed(2)),
-        score: calcScore(stats),
-        probeKbps: null
-    };
 }
 
 async function runSingleProbe(ipAddress, hostName, pathName) {
@@ -356,14 +287,11 @@ async function runSingleProbe(ipAddress, hostName, pathName) {
 async function runProbe(ipAddress, hostName) {
     const paths = normalizeProbePathList(PROBE_PATH);
     if (!paths.length) return null;
-    let best = null;
-    for (const pathName of paths) {
-        const result = await runSingleProbe(ipAddress, hostName, pathName);
-        if (!best || result.kbps > best.kbps) {
-            best = result;
-        }
-    }
-    return best;
+    const results = await Promise.all(paths.map(pathName => runSingleProbe(ipAddress, hostName, pathName)));
+    return results.reduce((best, result) => {
+        if (!best || result.kbps > best.kbps) return result;
+        return best;
+    }, null);
 }
 
 async function evaluateCandidates(candidates, hostName) {
@@ -390,76 +318,25 @@ async function evaluateCandidates(candidates, hostName) {
         probeKbps: null
     }));
 
-    base.sort((left, right) => left.score - right.score);
     if (!PROBE_PATH) return base;
 
-    for (const item of base.slice(0, Math.min(10, base.length))) {
-        const probe = await runProbe(item.ip, hostName);
-        item.probeKbps = probe ? probe.kbps : null;
-        if (!probe || !probe.ok) {
-            item.score += 600;
-            continue;
-        }
-        if (item.probeKbps < MIN_PROBE_KBPS) {
-            item.score += 400;
-        } else {
-            item.score -= Math.min(220, Math.round(item.probeKbps / 20));
-        }
-    }
+    const probeTargets = base.slice(0, Math.min(10, base.length));
+    const probeResults = await Promise.all(probeTargets.map(async row => ({
+        ip: row.ip,
+        probe: await runProbe(row.ip, hostName)
+    })));
 
-    base.sort((left, right) => left.score - right.score);
-    return base;
-}
-
-async function collectLocalSeedIPs(seedDomains) {
-    const validSeedDomains = [];
-    const invalidSeedDomains = [];
-    const ips = [];
-    let itdogSuccess = 0;
-    let itdogBlocked = 0;
-    let dohFallbackHits = 0;
-
-    for (let i = 0; i < Math.min(seedDomains.length, MAX_SEED_DOMAINS); i++) {
-        const domainName = seedDomains[i];
-        console.log(`\n[${i + 1}/${seedDomains.length}] Querying: ${domainName}`);
-
-        const itdogResult = await queryITDogAPI(domainName);
-        let sourceIps = [];
-        let sourceName = "itdog";
-
-        if (itdogResult.ok) {
-            itdogSuccess += 1;
-            sourceIps = itdogResult.ips;
-        } else {
-            itdogBlocked += 1;
-            sourceName = "doh_fallback";
-            sourceIps = await fetchDoHARecords(domainName);
-            if (sourceIps.length) dohFallbackHits += 1;
-        }
-
-        const cfIps = sourceIps.filter(isCloudflareIPv4);
-        if (cfIps.length) {
-            validSeedDomains.push(domainName);
-            ips.push(...cfIps);
-            console.log(`  ✓ ${sourceName}: ${cfIps.length} CF IPs`);
-        } else {
-            invalidSeedDomains.push(domainName);
-            console.log(`  → No CF IPs found (${sourceName})`);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 350));
-    }
-
-    return {
-        validSeedDomains,
-        invalidSeedDomains,
-        ips: uniqueIPv4List(ips).slice(0, MAX_IPS),
-        stats: {
-            itdogSuccess,
-            itdogBlocked,
-            dohFallbackHits
-        }
-    };
+    const probeMap = new Map(probeResults.map(item => [item.ip, item.probe]));
+    return base.map(row => {
+        const probe = probeMap.get(row.ip);
+        if (!probe) return row;
+        const kbps = Number.isFinite(probe.kbps) ? probe.kbps : 0;
+        return {
+            ...row,
+            probeKbps: kbps,
+            score: row.score + Math.max(0, MIN_PROBE_KBPS - kbps)
+        };
+    });
 }
 
 function buildMappingSuggestion(bestIp, targets) {
@@ -489,7 +366,7 @@ function buildGeneratedPlugin(bestIp, targets) {
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
         "#!author=@LoonMaster-Engine",
-        "#!icon=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Cloudflare.png",
+        "#!icon=https://img.icons8.com/fluency/96/refresh.png",
         "#!system=ios",
         "",
         "[Host]",

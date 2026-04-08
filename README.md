@@ -566,8 +566,10 @@ A：这是正常的。GA 会在你勾选"Enable location-aware"时自动安装 `
   - `CF_CANDIDATE_LIMIT`：建议 `30~50`，候选越多越准但越慢
   - `CF_EVAL_ROUNDS`：建议 `3~4`，抖动更小
   - `CF_PING_SAMPLES`：建议 `4~5`
-  - `CF_PROBE_PATH`：可留空（不确定路径时建议留空）；如需更贴近 Emby 体验再填 `/emby/Items` 等实际接口
+  - `CF_PROBE_PATH`：默认已内置 `/system/info/public,/web/index.html`，优先前者，后者兜底；如你知道更贴近 Emby 体验的接口，也可以改成 `/emby/Items` 等实际路径
   - `CF_MIN_PROBE_KBPS`：建议 `200~350`（家庭宽带通常 250 起）
+
+  这组默认探针的排序逻辑是：先用完全公开、体积更小的 `/system/info/public` 快速判定，再回退到 `/web/index.html` 保证 Web 服务可用时仍能测到结果。
 
   注意：脚本会先判断目标域名是否真的解析到 Cloudflare IP。若不是 CF 域名，则只保留日志，不写 host 映射，避免把非 CF 域名误写进配置。
 
@@ -713,6 +715,7 @@ A: 完全支持。如果既启用 GA 的 DNS，又手动运行了 ITDog，推送
 | `CF_EVAL_ROUNDS` | `4` | 评估轮数 |
 | `CF_PING_SAMPLES` | `5` | 每个 IP 的测速采样次数 |
 | `CF_JITTER_WEIGHT` | `0.9` | 抖动权重 |
+| `CF_PROBE_PATH` | `/system/info/public,/web/index.html` | 业务探针路径，优先公开 JSON 接口 |
 | `CF_DNS_MARGIN_MS` | `80` | 显著优于 DNS 的阈值 |
 | `CF_MAX_ACCEPT_DELAY` | `650` | 最大可接受延迟 |
 | `CF_PROBE_TIMEOUT` | `6000` | 业务探针超时 |
