@@ -344,6 +344,24 @@ async function runProbe(ipAddress, hostName) {
     }, null);
 }
 
+async function samplePing(ipAddress, hostName) {
+    const tasks = [];
+    for (let index = 0; index < PING_SAMPLES; index += 1) {
+        tasks.push(new Promise(resolve => setTimeout(() => resolve(ping(ipAddress, hostName)), index * 90)));
+    }
+    const results = await Promise.all(tasks);
+    const validDelays = results.filter(result => result.delay < 9999).map(result => result.delay);
+    const stats = calcStats(validDelays);
+    return {
+        ip: ipAddress,
+        delay: stats.avg,
+        jitter: stats.jitter,
+        successRate: Number(stats.successRate.toFixed(2)),
+        score: calcScore(stats),
+        probeKbps: null
+    };
+}
+
 async function evaluateCandidates(candidates, hostName) {
     const aggregate = new Map();
     for (let round = 0; round < EVAL_ROUNDS; round += 1) {
