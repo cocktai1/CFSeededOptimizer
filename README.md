@@ -537,6 +537,8 @@ A：这是正常的。GA 会在你勾选"Enable location-aware"时自动安装 `
 
 ## 本地 ITDog 采集工具使用指南
 
+> 新版为 **Hybrid 模式**：先读取云端 seed_pool，再做本地采集（ITDog 不可用时自动 DoH 回退），最后在手机本地对你的目标反代域名做大比拼，选出最佳 IP。
+
 ### 快速开始
 
 1. **安装插件**
@@ -551,16 +553,33 @@ A：这是正常的。GA 会在你勾选"Enable location-aware"时自动安装 `
 
    - Loon 主页长按插件图标
    - 选择 **▶ 运行脚本**
-   - 等待完成（通常 10-30 秒）
-   - 通知栏会提示结果摘要
+  - 在插件参数中先填 `CF_TARGET_DOMAINS`（必填，支持逗号/换行）
+  - 等待完成（通常 30-90 秒，取决于候选数量与评估轮数）
+  - 通知栏会提示最佳 IP 结果
 
-3. **推送结果**
+3. **核心参数建议（对齐 cf_speedup 思路）**
 
-   采集完成后，你会看到 `seed_pool.json` 的完整 JSON 输出。选择下列方式之一推送：
+  - `CF_TARGET_DOMAINS`：你的反代域名（例如 Emby 域名），必填
+  - `CF_SEED_POOL_URL`：云端候选池，默认项目 `data/seed_pool.json`
+  - `CF_CANDIDATE_LIMIT`：建议 `30~50`，候选越多越准但越慢
+  - `CF_EVAL_ROUNDS`：建议 `3~4`，抖动更小
+  - `CF_PING_SAMPLES`：建议 `4~5`
+  - `CF_PROBE_PATH`：建议填 Emby 实际路径（如 `/emby/Items` 或你的常用接口）
+  - `CF_MIN_PROBE_KBPS`：建议 `200~350`（家庭宽带通常 250 起）
+
+4. **推送结果**
+
+  采集完成后，你会看到 `hybrid_result.json` 的完整 JSON 输出，里面包含：
+  - `extended.final_best`：最终最佳 IP
+  - `extended.mapping_suggestion`：目标域名映射建议
+  - `extended.gist_snippet_host`：可直接贴到 Gist 的 Host 片段
+  - `extended.gist_snippet_plugin`：可直接贴到 Gist 的 Plugin 片段
+
+  选择下列方式之一推送：
 
    **方式 1：推送到 GitHub Gist**（推荐）
    ```
-   1. 复制 JSON 输出
+  1. 复制 `extended.gist_snippet_host` 或 `extended.gist_snippet_plugin`
    2. 创建或编辑 GitHub Gist，保存为 json_data.json
    3. 在 cf_seeded_optimizer.plugin 中配置 CF_GIST_ID 和 CF_TOKEN
    4. Loon 下次运行时会自动拉取这个 Gist
@@ -568,7 +587,7 @@ A：这是正常的。GA 会在你勾选"Enable location-aware"时自动安装 `
 
    **方式 2：推送到 GitHub 仓库**（Git）
    ```
-   1. 复制 JSON 输出，保存到本地 data/seed_pool.json
+  1. 复制完整 JSON 输出，保存到本地 data/seed_pool.json
    2. 执行：git add data/seed_pool.json && git commit -m "update: ITDog harvest" && git push
    3. GitHub Actions 和 Loon 都会自动拉取更新
    ```
@@ -582,35 +601,37 @@ A：这是正常的。GA 会在你勾选"Enable location-aware"时自动安装 `
 ### 采集日志示例
 
 ```
-🚀 Starting ITDog harvest for 12 seed domains...
+🚀 Starting hybrid harvest: cloud + local + benchmark
+🎯 Targets: emby.example.com
+
+☁️ Cloud seed_pool: 42 IPs
 
 [1/12] Querying: time.cloudflare.com
-  ✓ ITDog API for time.cloudflare.com: 3 IPs
-  → Found 3 CF IPs
+  ✓ doh_fallback: 2 CF IPs
 
 [2/12] Querying: speed.cloudflare.com
-  ✓ ITDog API for speed.cloudflare.com: 5 IPs
-  → Found 5 CF IPs
+  ✓ doh_fallback: 4 CF IPs
 
 ...
 
-✅ Harvest complete:
-  📊 Seed domains: 12
-  ✓ Valid: 11
-  ✗ Invalid: 1
-  🔗 Unique IPs: 45
-  📅 Updated: 2024-04-08T10:30:00Z
+🏁 Candidate pool ready: 40 IPs
+✅ emby.example.com top1 => 104.16.x.x | delay=36ms score=68
+
+...
+
+✅ CF 本地大比拼完成
+emby.example.com -> 104.16.x.x (36ms, score=68)
 ```
 
 ### 常见问题
 
 **Q: 采集需要自己手动运行吗？**
 
-A: 是的。B 策略（ITDog）完全由用户手动控制，这样对手机负载最小。如果想自动化，可在 GA 中配置 `CF_HARVEST_STRATEGIES=dns,itdog`。
+A: 是的。Hybrid 脚本默认手动触发，这样你可以按需做一次“终极比拼”。自动化由 GA 负责产出云端池，本地负责最后拍板。
 
 **Q: 如果 ITDog 网站掉了怎么办？**
 
-A: 脚本会自动降级到 DNS 直查（`_resolve_domain_direct`），不会中断。多策略的好处就是容错更好。
+A: 新版会自动识别 ITDog 返回 HTML/403，然后回退到 DoH（AliDNS/Cloudflare/Google）。不会中断。
 
 **Q: 多久采集一次比较合适？**
 
@@ -618,6 +639,7 @@ A: 建议按需。可以在以下场景手动触发：
 - 周一/周末（ISP 路由变化）
 - 切换网络后（Wi-Fi/4G/5G）
 - 感觉延迟变化时
+- Emby 播放出现缓冲或拉流速度下降时
 
 **Q: 能和 GA DNS 策略一起合并吗？**
 

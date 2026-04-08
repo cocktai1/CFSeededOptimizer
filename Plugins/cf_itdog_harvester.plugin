@@ -1,5 +1,5 @@
 #!name=CF ITDog 采集工具
-#!desc=从 ITDog 官网采集 CF IP，生成候选池。手动按需运行，不自动触发，对手机零负载。采集完成后输出 seed_pool.json 供推送。
+#!desc=云端种子池 + 本地采集 + 本地大比拼。为你的反代域名选出最优 CF IP，并输出可直接贴到 Gist 的映射片段。
 #!openUrl=https://github.com/cocktai1/CFSeededOptimizer
 #!author=@cocktai
 #!homepage=https://github.com/cocktai1/CFSeededOptimizer
@@ -8,12 +8,24 @@
 #!system=ios
 
 [Argument]
+CF_TARGET_DOMAINS = input,"",tag=目标反代域名,desc=必填：支持英文逗号或换行，示例 emby.example.com
+CF_SEED_POOL_URL = input,"https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json",tag=云端种子池URL,desc=默认读取仓库内 seed_pool.json
+CF_SEED_DOMAINS = input,"time.cloudflare.com\nspeed.cloudflare.com\ncdnjs.cloudflare.com\nwww.cloudflare.com\ndevelopers.cloudflare.com\nworkers.cloudflare.com\none.one.one.one\nshopee.sg\nshopee.tw\nicook.tw\nwww.digitalocean.com\ncloudflare.steamstatic.com",tag=本地采集种子域名,desc=ITDog被拦截时自动DoH回退
+CF_MAX_SEED_DOMAINS = input,"12",tag=种子域名上限,desc=每轮最多处理的种子域名数量
+CF_CANDIDATE_LIMIT = input,"40",tag=大比拼候选上限,desc=云端+本地合并后参与比拼的IP数量
+CF_SEED_POOL_LIMIT = input,"80",tag=输出IP池上限,desc=最终输出到结果中的IP池大小
+CF_EVAL_ROUNDS = input,"3",tag=评估轮数,desc=每个候选IP的评估轮次
+CF_PING_SAMPLES = input,"4",tag=每轮采样次数,desc=单轮内每个候选IP采样次数
+CF_JITTER_WEIGHT = input,"0.9",tag=抖动权重,desc=评分中抖动惩罚系数
+CF_PROBE_PATH = input,"",tag=业务探针路径,desc=可选：例如 /emby/items/... 更贴近真实体验
+CF_PROBE_TIMEOUT = input,"6000",tag=探针超时(ms),desc=业务探针请求超时
+CF_MIN_PROBE_KBPS = input,"250",tag=探针最低速率(KB/s),desc=低于该速率会增加惩罚分
 
 [Script]
 # 手动脚本：在 Loon 主页长按插件图标 → 运行脚本 执行
 # 使用 cron "0 0 31 2 *"（二月31号）确保自动触发永不发生
 # Loon UI 自动识别该脚本为可手动执行
-cron "0 0 31 2 *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/itdog_harvester.js, tag=CF ITDog 采集
+cron "0 0 31 2 *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/itdog_harvester.js, tag=CF混合优选采集, argument=[{CF_TARGET_DOMAINS},{CF_SEED_POOL_URL},{CF_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS}]
 
 [MITM]
 
