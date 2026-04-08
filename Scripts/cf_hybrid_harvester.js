@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v6";
+const SCRIPT_VERSION = "2026-04-09.v7";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -36,6 +36,9 @@ const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
 const EVAL_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_EVAL_CONCURRENCY || "4"), 10) || 4));
 const DNS_QUERY_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_DNS_CONCURRENCY || "4"), 10) || 4));
+const STRICT_ACCESS_MODE = String(ARG.CF_STRICT_ACCESS_MODE || "on").trim().toLowerCase();
+const ON_FAIL_STRATEGY = String(ARG.CF_ON_FAIL_STRATEGY || "keep_current").trim().toLowerCase();
+const ACCESS_CHECK_PATHS_RAW = String(ARG.CF_ACCESS_CHECK_PATHS || "/cdn-cgi/trace,/").trim();
 
 const STORE_RESULT_KEY = "CF_HYBRID_HARVEST_RESULT";
 const STORE_BEST_KEY = "CF_LOCAL_BEST_IP_RESULT";
@@ -214,12 +217,17 @@ function normalizeProbePathList(value) {
         .slice(0, 4);
 }
 
-function responseLooksBlocked(statusCode, bodyText) {
+function normalizeAccessCheckPaths(value) {
+    const paths = normalizeProbePathList(value);
+    return paths.length ? paths : ["/cdn-cgi/trace", "/"];
+}
+
+function responseLooksBlocked(statusCode, bodyText, strictMode) {
     const status = Number(statusCode || 0);
     const text = String(bodyText || "").toLowerCase();
-    if (status >= 400) return true;
     if (text.includes("error 1034") || text.includes("edge ip restricted")) return true;
-    if (text.includes("403 - forbidden") || text.includes("forbidden")) return true;
+    if (strictMode && status >= 400) return true;
+    if (!strictMode && status >= 500) return true;
     return false;
 }
 
@@ -318,7 +326,7 @@ async function runSingleProbe(ipAddress, hostName, pathName) {
         $httpClient.get({ url, headers, timeout: PROBE_TIMEOUT, node: "DIRECT", "binary-mode": true }, (err, resp, data) => {
             const status = Number(resp && resp.status ? resp.status : 0);
             const bodyText = typeof data === "string" ? data : "";
-            if (err || !resp || responseLooksBlocked(status, bodyText) || !data) {
+            if (err || !resp || responseLooksBlocked(status, bodyText, true) || !data) {
                 resolve({ ok: false, kbps: 0 });
                 return;
             }
@@ -387,7 +395,7 @@ function ping(ipAddress, hostName) {
         $httpClient.get({ url, headers, timeout: Math.max(1500, Math.min(4000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
             const status = Number(resp && resp.status ? resp.status : 0);
             const bodyText = typeof data === "string" ? data : "";
-            if (err || !resp || responseLooksBlocked(status, bodyText)) {
+            if (err || !resp || responseLooksBlocked(status, bodyText, true)) {
                 resolve({ ip: ipAddress, delay: 9999 });
                 return;
             }
@@ -396,31 +404,40 @@ function ping(ipAddress, hostName) {
     });
 }
 
-async function verifyIpAccessibleForDomain(ipAddress, domainName) {
-    const checks = ["/", "/cdn-cgi/trace"];
+async function verifyIpAccessibleForDomain(ipAddress, domainName, strictMode) {
+    const checks = normalizeAccessCheckPaths(ACCESS_CHECK_PATHS_RAW);
     for (const pathName of checks) {
         const url = `http://${ipAddress}${pathName}`;
         const headers = { "Host": domainName, "User-Agent": "Loon-CF-Hybrid" };
-        const ok = await new Promise(resolve => {
+        const result = await new Promise(resolve => {
             $httpClient.get({ url, headers, timeout: Math.max(2000, Math.min(5000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
                 if (err || !resp) {
-                    resolve(false);
+                    resolve({ ok: false, reason: "network_error" });
                     return;
                 }
                 const status = Number(resp.status || 0);
                 const bodyText = typeof data === "string" ? data : "";
-                resolve(!responseLooksBlocked(status, bodyText));
+                const text = String(bodyText || "").toLowerCase();
+                if (text.includes("error 1034") || text.includes("edge ip restricted")) {
+                    resolve({ ok: false, reason: "edge_ip_restricted_1034" });
+                    return;
+                }
+                if (responseLooksBlocked(status, bodyText, strictMode)) {
+                    resolve({ ok: false, reason: `http_${status}` });
+                    return;
+                }
+                resolve({ ok: true, reason: "ok" });
             });
         });
-        if (!ok) return false;
+        if (!result.ok) return result;
     }
-    return true;
+    return { ok: true, reason: "ok" };
 }
 
 async function verifyIpAccessibleForDomains(ipAddress, domains) {
     for (const domainName of domains) {
-        const ok = await verifyIpAccessibleForDomain(ipAddress, domainName);
-        if (!ok) return false;
+        const result = await verifyIpAccessibleForDomain(ipAddress, domainName, true);
+        if (!result.ok) return false;
     }
     return true;
 }
@@ -793,10 +810,15 @@ async function main() {
         probeKbps: value.probeCount ? Math.round(value.probeSum / value.probeCount) : null
     })).sort((a, b) => a.score - b.score);
 
+    const strictAccess = STRICT_ACCESS_MODE === "on" || STRICT_ACCESS_MODE === "true" || STRICT_ACCESS_MODE === "1";
+    const onFailStrategy = ["abort", "keep_current", "skip_domain"].includes(ON_FAIL_STRATEGY) ? ON_FAIL_STRATEGY : "keep_current";
+    console.log(`🛡️ 可访问性策略: strict=${strictAccess ? "on" : "off"}, on_fail=${onFailStrategy}`);
+
     const currentHostMap = await fetchCurrentGistHostMap();
     const selectedMappings = [];
     const domainComparisons = [];
     const rejectedOptions = [];
+    const failedDomains = [];
 
     for (const domainName of validTargetDomains) {
         const report = perDomainRanking.find(item => item.domainName === domainName);
@@ -821,12 +843,25 @@ async function main() {
         for (const option of options) {
             const ipAddress = option && option.row ? option.row.ip : "";
             if (!ipAddress) continue;
-            const accessible = await verifyIpAccessibleForDomain(ipAddress, domainName);
-            if (accessible) {
+            const accessResult = await verifyIpAccessibleForDomain(ipAddress, domainName, strictAccess);
+            if (accessResult.ok) {
                 selected = option;
                 break;
             }
-            rejectedOptions.push({ domain: domainName, source: option.source, ip: ipAddress, reason: "access_blocked_or_403_1034" });
+            rejectedOptions.push({ domain: domainName, source: option.source, ip: ipAddress, reason: accessResult.reason || "access_blocked" });
+        }
+
+        if (!selected && onFailStrategy === "keep_current") {
+            const keepIp = currentHostMap ? currentHostMap[domainName] : "";
+            if (keepIp && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(keepIp)) {
+                const keepCheck = await verifyIpAccessibleForDomain(keepIp, domainName, false);
+                if (keepCheck.ok) {
+                    const keepEval = await evaluateSingleIpAcrossDomains(keepIp, [domainName]);
+                    selected = { source: "keep_current", row: keepEval };
+                } else {
+                    rejectedOptions.push({ domain: domainName, source: "keep_current", ip: keepIp, reason: keepCheck.reason || "access_blocked" });
+                }
+            }
         }
 
         if (selected) {
@@ -840,9 +875,10 @@ async function main() {
                 successRate: selected.row.successRate,
                 probeKbps: selected.row.probeKbps
             });
+        } else {
+            failedDomains.push(domainName);
         }
 
-        const compareRef = selected ? selected.row : (hybridBest || dnsBaseline || hostmapBaseline);
         domainComparisons.push({
             domain: domainName,
             selected_source: selected ? selected.source : "none",
@@ -857,14 +893,22 @@ async function main() {
         });
     }
 
-    if (!selectedMappings.length) {
-        console.log("❌ 所有域名候选IP均未通过可访问性校验，已停止写入，避免把不可访问IP写入HostMap。");
+    if (!selectedMappings.length || (onFailStrategy === "abort" && failedDomains.length > 0)) {
+        if (!selectedMappings.length) {
+            console.log("❌ 所有域名候选IP均未通过可访问性校验，已停止写入，避免把不可访问IP写入HostMap。");
+        } else {
+            console.log(`❌ 因失败策略=abort，以下域名无可用IP，本轮停止写入: ${failedDomains.join(", ")}`);
+        }
         if (rejectedOptions.length) {
             rejectedOptions.forEach(item => console.log(`  - ${item.domain} ${item.source} ${item.ip}: ${item.reason}`));
         }
         notify("⚠️ CF优选已拦截不可访问IP", "安全模式已生效", "候选IP触发403/1034等限制，已停止更新HostMap");
         $done();
         return;
+    }
+
+    if (failedDomains.length) {
+        console.log(`⚠️ 以下域名未找到可写入候选，将按策略处理: ${failedDomains.join(", ")}`);
     }
 
     const selectedMappingsSorted = selectedMappings.slice().sort((a, b) => a.score - b.score);
@@ -894,6 +938,11 @@ async function main() {
             extra_domain_diagnostics: extraDomainDiagnostics,
             candidate_pool_size: candidatePool.length,
             local_stats: localSeedResult.stats,
+            access_policy: {
+                strict_mode: strictAccess,
+                on_fail_strategy: onFailStrategy,
+                access_check_paths: normalizeAccessCheckPaths(ACCESS_CHECK_PATHS_RAW)
+            },
             cloud_seed_count: remoteIps.length,
             target_dns_cf_count: targetDnsIps.length,
             final_best: overallBest,
@@ -929,6 +978,9 @@ async function main() {
     selectedMappingsSorted.forEach(item => {
         console.log(`┃ - ${item.domain} => ${item.ip} (${item.delay}ms, ${item.source})`);
     });
+    if (failedDomains.length) {
+        console.log(`┃ 未更新域名: ${failedDomains.join("，")}`);
+    }
     if (invalidTargetDomains.length) {
         console.log("┃ 被淘汰域名:");
         for (const item of targetDomainDiagnostics.filter(d => d.status === "invalid")) {
