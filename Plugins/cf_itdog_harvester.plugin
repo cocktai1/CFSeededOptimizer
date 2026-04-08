@@ -5,7 +5,6 @@
 #!homepage=https://github.com/cocktai1/CFSeededOptimizer
 #!icon=https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f4e1.png
 #!loon_version=3.2.1(733)
-#!system=ios
 
 [Argument]
 CF_TOKEN = input,"",tag=GitHub Token,desc=可选：填写后自动写入 Gist
