@@ -300,6 +300,27 @@ async function runProbe(ipAddress, hostName) {
     }, null);
 }
 
+function calcStats(delays) {
+    if (!delays.length) {
+        return { avg: 9999, jitter: 9999, successRate: 0 };
+    }
+
+    const avg = delays.reduce((sum, delay) => sum + delay, 0) / delays.length;
+    const maxDelay = Math.max(...delays);
+    const minDelay = Math.min(...delays);
+
+    return {
+        avg: Math.round(avg),
+        jitter: Math.round(maxDelay - minDelay),
+        successRate: delays.length / PING_SAMPLES
+    };
+}
+
+function calcScore(metrics) {
+    const lossPenalty = Math.round((1 - metrics.successRate) * 900);
+    return Math.round(metrics.avg + metrics.jitter * JITTER_WEIGHT + lossPenalty);
+}
+
 function ping(ipAddress, hostName) {
     return new Promise(resolve => {
         const startedAt = Date.now();
