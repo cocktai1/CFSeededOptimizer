@@ -557,10 +557,9 @@ function buildMappingSuggestion(mappings) {
 }
 
 function buildPluginSnippet(mappings) {
-    const lines = mappings.map(item => `${item.domain} = ${item.ip}`);
+    const lines = mappings.map(item => `${item.domain} = ${item.ip}, use-in-proxy=true`);
     return [
         "[Host]",
-        "use-in-proxy=true",
         ...lines,
         ""
     ].join("\n");
@@ -571,7 +570,7 @@ function buildHostSnippet(mappings) {
 }
 
 function buildGeneratedPlugin(mappings) {
-    const hostLines = mappings.map(item => `${item.domain} = ${item.ip}`).join("\n");
+    const hostLines = mappings.map(item => `${item.domain} = ${item.ip}, use-in-proxy=true`).join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
@@ -579,7 +578,6 @@ function buildGeneratedPlugin(mappings) {
         "#!icon=https://img.icons8.com/fluency/96/refresh.png",
         "",
         "[Host]",
-        "use-in-proxy=true",
         hostLines,
         ""
     ].join("\n");
