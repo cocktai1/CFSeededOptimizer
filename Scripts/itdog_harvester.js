@@ -239,6 +239,56 @@ async function fetchDoHARecords(domainName) {
     return uniqueIPv4List(results.flat());
 }
 
+async function collectLocalSeedIPs(seedDomains) {
+    const validSeedDomains = [];
+    const invalidSeedDomains = [];
+    const ips = [];
+    let itdogSuccess = 0;
+    let itdogBlocked = 0;
+    let dohFallbackHits = 0;
+
+    for (const domainName of seedDomains) {
+        let sourceIps = [];
+        let sourceName = "itdog";
+
+        const itdogResult = await queryITDogAPI(domainName);
+        if (itdogResult.ok) {
+            itdogSuccess += 1;
+            sourceIps = itdogResult.ips;
+        } else {
+            itdogBlocked += 1;
+            sourceName = "doh_fallback";
+            sourceIps = await fetchDoHARecords(domainName);
+            if (sourceIps.length > 0) {
+                dohFallbackHits += 1;
+            }
+        }
+
+        const cfIps = uniqueIPv4List(sourceIps.filter(isCloudflareIPv4));
+        if (cfIps.length > 0) {
+            validSeedDomains.push(domainName);
+            ips.push(...cfIps);
+            console.log(`  ✓ ${sourceName}: ${cfIps.length} CF IPs`);
+        } else {
+            invalidSeedDomains.push(domainName);
+            console.log(`  → No CF IPs found (${sourceName})`);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 350));
+    }
+
+    return {
+        validSeedDomains,
+        invalidSeedDomains,
+        ips: uniqueIPv4List(ips).slice(0, MAX_IPS),
+        stats: {
+            itdogSuccess,
+            itdogBlocked,
+            dohFallbackHits
+        }
+    };
+}
+
 async function queryITDogAPI(domainName) {
     const url = `${ITDOG_API_BASE}/api/lookup?domain=${encodeURIComponent(domainName)}`;
     return new Promise(resolve => {
