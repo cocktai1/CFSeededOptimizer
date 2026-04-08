@@ -560,11 +560,13 @@ A：这是正常的。GA 会在你勾选"Enable location-aware"时自动安装 `
 3. **核心参数建议（对齐 cf_speedup 思路）**
 
   - `CF_TARGET_DOMAINS`：你的反代域名（例如 Emby 域名），必填
+  - `CF_TOKEN` + `CF_GIST_ID`：可选，填写后会自动写入 Gist（默认文件名 `CF_HostMap.plugin`）
+  - `CF_OUTPUT_MODE`：`plugin` 或 `host`（推荐 `plugin`）
   - `CF_SEED_POOL_URL`：云端候选池，默认项目 `data/seed_pool.json`
   - `CF_CANDIDATE_LIMIT`：建议 `30~50`，候选越多越准但越慢
   - `CF_EVAL_ROUNDS`：建议 `3~4`，抖动更小
   - `CF_PING_SAMPLES`：建议 `4~5`
-  - `CF_PROBE_PATH`：建议填 Emby 实际路径（如 `/emby/Items` 或你的常用接口）
+  - `CF_PROBE_PATH`：可留空（不确定路径时建议留空）；如需更贴近 Emby 体验再填 `/emby/Items` 等实际接口
   - `CF_MIN_PROBE_KBPS`：建议 `200~350`（家庭宽带通常 250 起）
 
 4. **推送结果**

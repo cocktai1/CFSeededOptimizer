@@ -18,6 +18,10 @@ const DEFAULT_SEED_DOMAINS = [
 const TARGET_DOMAINS_RAW = String(ARG.CF_TARGET_DOMAINS || "").trim();
 const SEED_DOMAINS_RAW = String(ARG.CF_SEED_DOMAINS || DEFAULT_SEED_DOMAINS.join("\n")).trim();
 const SEED_POOL_URL = String(ARG.CF_SEED_POOL_URL || "https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json").trim();
+const GITHUB_TOKEN = String(ARG.CF_TOKEN || "").trim();
+const GIST_ID = String(ARG.CF_GIST_ID || "").trim();
+const GIST_FILENAME = String(ARG.CF_GIST_FILE || "CF_HostMap.plugin").trim();
+const OUTPUT_MODE = String(ARG.CF_OUTPUT_MODE || "plugin").trim().toLowerCase();
 const ITDOG_API_BASE = "https://www.itdog.cn";
 const REQUEST_TIMEOUT = 6000;
 const MAX_SEED_DOMAINS = Math.min(24, Math.max(6, Number.parseInt(String(ARG.CF_MAX_SEED_DOMAINS || "12"), 10) || 12));
@@ -52,12 +56,32 @@ const CF_IPV4_CIDRS = [
 ];
 
 function parseDomainList(rawValue) {
+    const decoded = String(rawValue || "")
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r");
+
     return Array.from(new Set(
-        String(rawValue || "")
+        decoded
             .split(/[\r\n,]+/)
-            .map(item => item.trim().toLowerCase())
+            .map(item => normalizeDomainToken(item))
             .filter(Boolean)
     ));
+}
+
+function normalizeDomainToken(rawDomain) {
+    const value = String(rawDomain || "").trim();
+    if (!value) return "";
+    let normalized = value;
+    normalized = normalized.replace(/^https?:\/\//i, "");
+    normalized = normalized.split("/")[0];
+    normalized = normalized.split(":")[0];
+    return normalized.trim().toLowerCase();
+}
+
+function hasValidGistAuth() {
+    if (!GITHUB_TOKEN || !GIST_ID) return false;
+    if (isPlaceholder(GITHUB_TOKEN) || isPlaceholder(GIST_ID)) return false;
+    return true;
 }
 
 function uniqueIPv4List(items) {
@@ -455,8 +479,74 @@ function buildPluginSnippet(bestIp, targets) {
     ].join("\n");
 }
 
+function buildHostSnippet(bestIp, targets) {
+    return targets.map(domainName => `${domainName} = ${bestIp}`).join("\n");
+}
+
+function buildGeneratedPlugin(bestIp, targets) {
+    const hostLines = targets.map(domainName => `host, ${domainName}, ${bestIp}`).join("\n");
+    return [
+        "#!name=CF_HostMap",
+        "#!desc=由 CF 混合优选脚本自动生成",
+        "#!author=@LoonMaster-Engine",
+        "#!icon=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Cloudflare.png",
+        "#!system=ios",
+        "",
+        "[Host]",
+        hostLines,
+        ""
+    ].join("\n");
+}
+
+async function syncBestToGist(bestIp, targets) {
+    if (!hasValidGistAuth()) {
+        console.log("ℹ️ 未配置 GitHub Token/Gist ID，跳过自动写入 Gist。仅保留本地结果。");
+        return false;
+    }
+
+    const hostContent = buildHostSnippet(bestIp, targets);
+    const pluginContent = buildGeneratedPlugin(bestIp, targets);
+    const content = OUTPUT_MODE === "host" ? hostContent : pluginContent;
+
+    const payload = {
+        files: {
+            [GIST_FILENAME]: {
+                content
+            }
+        }
+    };
+
+    const headers = {
+        "Authorization": `token ${GITHUB_TOKEN}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "Loon-CF-Hybrid"
+    };
+
+    return new Promise(resolve => {
+        $httpClient.patch(
+            {
+                url: `https://api.github.com/gists/${GIST_ID}`,
+                headers,
+                body: JSON.stringify(payload),
+                timeout: 7000,
+                node: "DIRECT"
+            },
+            (err, resp) => {
+                if (err || !resp || Number(resp.status || 0) >= 300) {
+                    console.log(`❌ Gist 写入失败: ${err || `HTTP ${resp ? resp.status : 0}`}`);
+                    resolve(false);
+                    return;
+                }
+                console.log(`✅ Gist 写入成功: ${GIST_FILENAME}`);
+                resolve(true);
+            }
+        );
+    });
+}
+
 async function main() {
-    console.log("🔄 CF ITDog Harvester initialized");
+    console.log("🔄 CF 混合优选采集器已启动");
 
     const targetDomains = parseDomainList(TARGET_DOMAINS_RAW);
     if (!targetDomains.length || isPlaceholder(TARGET_DOMAINS_RAW)) {
@@ -471,16 +561,19 @@ async function main() {
     }
 
     const seedDomains = parseDomainList(SEED_DOMAINS_RAW);
-    console.log(`🚀 Starting hybrid harvest: cloud + local + benchmark`);
-    console.log(`🎯 Targets: ${targetDomains.join(", ")}`);
+    console.log("🚀 开始执行：云端种子池 + 本地采集 + 本地大比拼");
+    console.log(`🎯 目标域名: ${targetDomains.join("，")}`);
+    if (!PROBE_PATH) {
+        console.log("ℹ️ 未配置业务探针路径，当前仅按延迟/抖动/成功率评分。");
+    }
 
     const remoteSeedPool = await fetchRemoteSeedPool(SEED_POOL_URL);
     const remoteIps = remoteSeedPool ? remoteSeedPool.ips.filter(isCloudflareIPv4) : [];
-    console.log(`☁️ Cloud seed_pool: ${remoteIps.length} IPs`);
+    console.log(`☁️ 云端种子池: ${remoteIps.length} 个IP`);
 
     const localSeedResult = await collectLocalSeedIPs(seedDomains);
-    console.log(`📱 Local harvest: valid=${localSeedResult.validSeedDomains.length} invalid=${localSeedResult.invalidSeedDomains.length} ips=${localSeedResult.ips.length}`);
-    console.log(`📊 ITDog status: ok=${localSeedResult.stats.itdogSuccess} blocked=${localSeedResult.stats.itdogBlocked} doh_fallback_hit=${localSeedResult.stats.dohFallbackHits}`);
+    console.log(`📱 本地采集: 有效=${localSeedResult.validSeedDomains.length} 无效=${localSeedResult.invalidSeedDomains.length} IP=${localSeedResult.ips.length}`);
+    console.log(`📊 ITDog状态: 成功=${localSeedResult.stats.itdogSuccess} 被拦截=${localSeedResult.stats.itdogBlocked} DoH回退命中=${localSeedResult.stats.dohFallbackHits}`);
 
     const targetDnsIps = [];
     for (const domainName of targetDomains) {
@@ -505,7 +598,7 @@ async function main() {
         return;
     }
 
-    console.log(`🏁 Candidate pool ready: ${candidatePool.length} IPs`);
+    console.log(`🏁 候选池就绪: ${candidatePool.length} 个IP`);
 
     const perDomainRanking = [];
     for (const domainName of targetDomains) {
@@ -513,7 +606,7 @@ async function main() {
         perDomainRanking.push({ domainName, rows: rows.slice(0, 12) });
         const top = rows[0] || null;
         if (top) {
-            console.log(`✅ ${domainName} top1 => ${top.ip} | delay=${top.delay}ms score=${top.score}`);
+            console.log(`✅ ${domainName} 第一名 => ${top.ip} | 延迟=${top.delay}ms 评分=${top.score}`);
         }
     }
 
@@ -546,6 +639,9 @@ async function main() {
     const best = finalRanking[0];
     const mappingSuggestion = buildMappingSuggestion(best.ip, targetDomains);
     const pluginSnippet = buildPluginSnippet(best.ip, targetDomains);
+    const hostSnippet = buildHostSnippet(best.ip, targetDomains);
+
+    const gistSynced = await syncBestToGist(best.ip, targetDomains);
 
     const output = {
         seed_domains: seedDomains,
@@ -565,16 +661,19 @@ async function main() {
             final_best: best,
             final_ranking_top10: finalRanking.slice(0, 10),
             mapping_suggestion: mappingSuggestion,
-            gist_snippet_host: mappingSuggestion.map(item => item.host).join("\n"),
-            gist_snippet_plugin: pluginSnippet
+            gist_snippet_host: hostSnippet,
+            gist_snippet_plugin: pluginSnippet,
+            gist_file: GIST_FILENAME,
+            output_mode: OUTPUT_MODE,
+            gist_synced: gistSynced
         }
     };
 
     const outputJson = JSON.stringify(output, null, 2);
     console.log(`\n📋 hybrid_result.json content:\n${outputJson}\n`);
-    console.log("📋 Gist Host snippet:");
+    console.log("📋 Gist Host 片段:");
     console.log(output.extended.gist_snippet_host);
-    console.log("\n📋 Gist Plugin snippet:");
+    console.log("\n📋 Gist Plugin 片段:");
     console.log(output.extended.gist_snippet_plugin);
 
     try {
@@ -585,23 +684,23 @@ async function main() {
             best
         }), STORE_BEST_KEY);
     } catch (error) {
-        console.log(`⚠️ persist failed: ${error.message}`);
+        console.log(`⚠️ 本地缓存写入失败: ${error.message}`);
     }
 
     $notification.post({
         title: "✅ CF 本地大比拼完成",
-        message: `${targetDomains[0]} -> ${best.ip} (${best.delay}ms, score=${best.score})`,
+        message: `${targetDomains[0]} -> ${best.ip} (${best.delay}ms, 评分=${best.score})`,
         sound: "default"
     });
 
-    console.log("🏁 Done");
+    console.log("🏁 执行完成");
     $done();
 }
 
 main().catch(error => {
-    console.log(`❌ Fatal error: ${error.message}`);
+    console.log(`❌ 致命错误: ${error.message}`);
     $notification.post({
-        title: "❌ Hybrid Harvester 失败",
+        title: "❌ CF 混合优选失败",
         message: error.message,
         sound: "default"
     });

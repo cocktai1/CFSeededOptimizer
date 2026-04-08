@@ -3,11 +3,15 @@
 #!openUrl=https://github.com/cocktai1/CFSeededOptimizer
 #!author=@cocktai
 #!homepage=https://github.com/cocktai1/CFSeededOptimizer
-#!icon=https://img.icons8.com/fluency/96/cloud-download.png
+#!icon=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Cloudflare.png
 #!loon_version=3.2.1(733)
 #!system=ios
 
 [Argument]
+CF_TOKEN = input,"",tag=GitHub Token,desc=可选：填写后自动写入 Gist
+CF_GIST_ID = input,"",tag=Gist ID,desc=可选：填写后自动写入 CF_HostMap
+CF_GIST_FILE = input,"CF_HostMap.plugin",tag=Gist 文件名,desc=建议保留默认 CF_HostMap.plugin
+CF_OUTPUT_MODE = input,"plugin",tag=输出模式,desc=plugin/host；plugin 可直接作为插件订阅
 CF_TARGET_DOMAINS = input,"",tag=目标反代域名,desc=必填：支持英文逗号或换行，示例 emby.example.com
 CF_SEED_POOL_URL = input,"https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json",tag=云端种子池URL,desc=默认读取仓库内 seed_pool.json
 CF_SEED_DOMAINS = input,"time.cloudflare.com\nspeed.cloudflare.com\ncdnjs.cloudflare.com\nwww.cloudflare.com\ndevelopers.cloudflare.com\nworkers.cloudflare.com\none.one.one.one\nshopee.sg\nshopee.tw\nicook.tw\nwww.digitalocean.com\ncloudflare.steamstatic.com",tag=本地采集种子域名,desc=ITDog被拦截时自动DoH回退
@@ -25,7 +29,7 @@ CF_MIN_PROBE_KBPS = input,"250",tag=探针最低速率(KB/s),desc=低于该速�
 # 手动脚本：在 Loon 主页长按插件图标 → 运行脚本 执行
 # 使用 cron "0 0 31 2 *"（二月31号）确保自动触发永不发生
 # Loon UI 自动识别该脚本为可手动执行
-cron "0 0 31 2 *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/itdog_harvester.js, tag=CF混合优选采集, argument=[{CF_TARGET_DOMAINS},{CF_SEED_POOL_URL},{CF_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS}]
+cron "0 0 31 2 *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/itdog_harvester.js, tag=CF混合优选采集, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_OUTPUT_MODE},{CF_TARGET_DOMAINS},{CF_SEED_POOL_URL},{CF_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS}]
 
 [MITM]
 
