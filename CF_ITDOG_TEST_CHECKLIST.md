@@ -1,239 +1,137 @@
-# CF ITDog 采集工具 - 测试清单
+# CF 混合优选采集工具 - 测试清单 (v5)
 
-## 🎯 问题修复说明
-
-### 原问题
-- ❌ 插件图标显示为"C"而不是云下载图标
-- ❌ 插件无法在 Loon UI 中正确识别为可执行脚本
-- ❌ 脚本绑定方式不符合 Loon 官方规范
-
-### 修复方案
-按照 **LoonMaster 标准** 重写插件：
-1. ✅ 图标定义移至头部元标签：`#!icon=https://...`
-2. ✅ 脚本绑定使用标准格式：`cron "0 0 31 2 *" script-path=URL, tag=名称`
-3. ✅ 永不触发的 cron 表达式确保手动运行模式
-4. ✅ 脚本指向 GitHub 远程 URL
-
-**修复后的插件文件**：[cf_itdog_harvester.plugin](Plugins/cf_itdog_harvester.plugin)
-
-**规范指南**：[PLUGIN_SPEC.md](PLUGIN_SPEC.md)（包含三个插件对比）
+## 目标
+确保 v5 能力完整可用：
+- 运行脚本版本正确（script=2026-04-09.v5）
+- 通知不再出现 (null)
+- 403/1034 风险 IP 会被拦截，不写入 HostMap
+- 支持扩展域名池（CF_EXTRA_DOMAINS）并自动校验是否为 CF 域名
+- 报告包含基线对比与底部总结
 
 ---
 
-## ✅ 测试清单
+## Step 1: 导入或刷新插件
 
-### Step 1: 刷新 Loon 订阅或重新导入插件
+订阅地址：
+https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Plugins/cf_itdog_harvester.plugin
 
-**方式 A：使用 URL 订阅**
-```
-1. 打开 Loon
-2. 主页 → 左上角"≡" → 订阅
-3. 选择相应方式添加订阅：
-   https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Plugins/cf_itdog_harvester.plugin
-4. 等待加载完成
-```
-
-**方式 B：本地复制导入**
-```
-1. 复制 cf_itdog_harvester.plugin 内容
-2. Loon 主页 → 主菜单 → 本地编辑
-3. 新建文件，粘贴内容
-4. 保存为 .plugin 格式
-```
+检查项：
+- [ ] 插件名称显示为 CF 混合优选采集工具
+- [ ] 参数页出现新增参数：CF_EXTRA_DOMAINS、CF_DNS_CONCURRENCY
+- [ ] script-path 含 v5 参数（...cf_hybrid_harvester.js?v=20260409v5）
 
 ---
 
-### Step 2: 验证图标是否正确显示
+## Step 2: 参数建议（首轮）
 
-**检查项**：
-- [ ] 插件列表中看到"CF ITDog 采集工具"
-- [ ] 图标显示为**蓝色云下载符号** ☁️，**不是** "C" 或问号
-- [ ] 长按插件图标，菜单显示内容正常
+必填：
+- CF_TARGET_DOMAINS：你的目标域名（逗号或换行）
 
----
+可选推荐：
+- CF_EXTRA_DOMAINS：额外 CF 域名池（逗号或换行）
+- CF_EVAL_CONCURRENCY：4
+- CF_DNS_CONCURRENCY：4
+- CF_PING_SAMPLES：4
+- CF_EVAL_ROUNDS：3
 
-### Step 3: 验证脚本可手动运行
-
-**操作**：
-```
-1. Loon 主屏，找到"CF ITDog 采集工具"插件
-2. 长按插件图标
-3. 选择"▶ 运行脚本"
-```
-
-**预期结果**：
-- ✅ 脚本开始执行（Loon 会显示运行中的通知）
-- ✅ 控制台显示采集进度：
-  ```
-  🚀 Starting ITDog harvest for 12 seed domains...
-  🔄 CF ITDog Harvester initialized
-  📍 Running as: Manual Trigger (Loon UI 长按运行)
-  
-  [1/12] Querying: time.cloudflare.com
-  ✓ ITDog API for time.cloudflare.com: X IPs
-  ...
-  ```
-- ✅ 采集完成后收到通知：
-  ```
-  ✅ CF ITDog 采集完成
-  成功: X | IP 池: Y | 时间: ...
-  ```
+说明：
+- 扩展域名会自动做 CF 校验，非 CF 域名不会污染候选池。
 
 ---
 
-### Step 4: 验证脚本不会自动触发
+## Step 3: 手动运行脚本
 
-**检查项**：
-- [ ] 重启 Loon 后，脚本**不会**自动运行
-- [ ] 关闭 Loon 过夜，第二天打开时**不会**看到脚本运行记录
-- [ ] 在"任务"或"日志"中搜索 "CF ITDog"，**看不到**自动触发的记录
+操作：
+1. 长按插件
+2. 选择 运行脚本
 
-**原理解释**：
-- cron 表达式 `"0 0 31 2 *"` 表示"二月的第31号午夜"
-- 二月永远没有第31天，所以该时间永不发生
-- 因此脚本永不自动运行，只能手动执行
-
----
-
-### Step 5: 验证采集结果有效性
-
-**操作**：
-```
-1. 运行脚本后观察控制台输出
-2. 查看 seed_pool.json 数据
-```
-
-**预期结果**：
-- ✅ 至少采集到 5-15 个 CF IP
-- ✅ 所有 IP 都在以下 CIDR 范围内：
-  ```
-  103.21.244.0/22, 103.22.200.0/22, ...（共15个范围）
-  ```
-- ✅ JSON 输出格式正确：
-  ```json
-  {
-    "seed_domains": [...],
-    "valid_seed_domains": [...],
-    "invalid_seed_domains": [...],
-    "ips": [...],
-    "updated_at": 1712345678,
-    "source": "loon-itdog-harvester-v2"
-  }
-  ```
+关键日志检查：
+- [ ] 首行包含：script=2026-04-09.v5
+- [ ] 出现：云端种子池、本地DNS状态、候选池就绪
+- [ ] 出现底部总结块：本轮优选总结
 
 ---
 
-### Step 6: 验证数据持久化
+## Step 4: 通知样式检查
 
-**操作**：
-```
-1. 第一次运行脚本，采集并完成
-2. 立即重新运行脚本
-```
+预期：
+- [ ] 通知显示为三段式文字（标题/副标题/正文）
+- [ ] 不再出现 {(null)(null)} 这种对象式通知乱码
 
-**预期结果**：
-- ✅ 控制台显示：`✅ Result saved to local cache: CF_ITDOG_HARVEST_RESULT`
-- ✅ 采集结果保存到 Loon 本地缓存
-- ✅ 即使网络离线，本地缓存仍可用于兜底
+若仍异常：
+- 清理 Loon 缓存并重启
+- 删除插件后重新添加订阅
 
 ---
 
-## 🐛 常见问题排查
+## Step 5: 可访问性安全门禁检查（重点）
 
-### 问题 1：图标仍然显示为 "C"
+目的：杜绝“测速可用但实际访问 403/1034”被写入。
 
-**原因**：Loon 缓存未刷新
-
-**解决**：
-```
-1. Loon 设置 → 高级 → 清除缓存
-2. 完全退出 Loon（从后台杀死进程）
-3. 重启 Loon
-4. 重新刷新插件订阅或导入
-```
+预期：
+- [ ] 命中 403 / Error 1034 / Edge IP Restricted 的候选会被拦截
+- [ ] 当所有候选都不可访问时，脚本停止写入并发出拦截通知
+- [ ] 报告 comparison.rejected_candidates 中有拦截原因（access_blocked_or_403_1034）
 
 ---
 
-### 问题 2：脚本不出现在菜单中
+## Step 6: 对比决策检查
 
-**原因**：插件格式错误
+v5 会比较三条基线并自动择优：
+- hybrid_pool
+- dns_baseline
+- current_hostmap
 
-**检查`**：
-```bash
-# 验证插件文件格式
-cat Plugins/cf_itdog_harvester.plugin | head -20
-
-# 应该看到：
-# #!name=CF ITDog 采集工具
-# #!desc=...
-# #!icon=...
-# [Script]
-# cron "0 0 31 2 *" script-path=...
-```
+检查项：
+- [ ] extended.final_best_source 存在且合理
+- [ ] comparison 中有各基线对象与改善毫秒数
+- [ ] 总结区显示“赢家来源”和改善量
 
 ---
 
-### 问题 3：脚本运行但采集失败
+## Step 7: 域名淘汰原因检查
 
-**原因**：ITDog API 不可达
-
-**排查**：
-```
-1. 检查网络连接
-2. 验证 ITDog 官网是否可访问：https://www.itdog.cn
-3. 查看控制台错误信息
-4. 如果 ITDog 被墙，需要代理或更换源
-```
+检查项：
+- [ ] invalid_target_domains 有值时，target_domain_diagnostics 提供原因
+- [ ] 原因可见：not_cloudflare / no_a_record_or_dns_failed
+- [ ] 总结区展示被淘汰域名和原因
 
 ---
 
-### 问题 4：脚本自动运行了
+## Step 8: 结果一致性检查
 
-**原因**：使用了错误的 cron 表达式
-
-**验证**：
-```bash
-grep 'cron' Plugins/cf_itdog_harvester.plugin
-
-# 正确：
-# cron "0 0 31 2 *" script-path=...
-
-# 错误示例（会自动运行）：
-# cron "0 0 * * *"       # 每天午夜运行
-# cron "0 * * * *"       # 每小时运行
-# cron "15 * * * *"      # 每小时第15分钟运行
-```
+检查项：
+- [ ] final_best.ip 与 gist_snippet_host 中 IP 一致
+- [ ] output_mode=plugin 时，gist_snippet_plugin 内容正确
+- [ ] Gist 写入成功日志存在
 
 ---
 
-## 📊 性能基准
+## Step 9: 性能与稳定性建议
 
-| 指标 | 预期值 | 说明 |
-|------|--------|------|
-| 采集耗时 | 15-30 秒 | 取决于网络和 ITDog 响应速度 |
-| 采集 IP 数 | 15-40 个 | 通常 20-30 个 CF IP |
-| 初次运行 | 首次需完整采集 | 后续有本地缓存 |
-| 手机负载 | 极低 | 不阻塞主线程，后台快速完成 |
-
----
-
-## 🎓 学习路径
-
-1. **理解插件格式**：阅读 [PLUGIN_SPEC.md](PLUGIN_SPEC.md)
-2. **对比三个插件**：查看 Plugins/ 目录中的三个 .plugin 文件
-3. **查看脚本实现**：[Scripts/itdog_harvester.js](Scripts/itdog_harvester.js)
-4. **查看官方文档**：https://nsloon.app/docs/intro
+若延迟波动大，可逐步调参：
+1. CF_EVAL_CONCURRENCY 从 4 调到 3
+2. CF_DNS_CONCURRENCY 从 4 调到 3
+3. 保持 CF_PING_SAMPLES=4，必要时升到 5
+4. 若耗时过长，把 CF_EVAL_ROUNDS 从 3 调到 2
 
 ---
 
-## 🚀 下一步
+## 常见问题速查
 
-- [ ] 测试通过后，将 seed_pool.json 推送到 GitHub 或 Gist
-- [ ] 配置 GA 定时采集，作为 Tier 1 兜底
-- [ ] 可选：添加多个城市/ISP 的 ITDog 采集任务
+1) 还是出现旧版本日志
+- 原因：脚本缓存未刷新
+- 处理：删除插件订阅并重加，确认日志是 script=2026-04-09.v5
+
+2) 结果里只有一个目标域名
+- 原因：另一个域名未解析到 CF A 记录或不是 CF 域
+- 看 target_domain_diagnostics 的 reason 字段
+
+3) 通知仍不好看
+- 先确认 v5 生效；若生效仍异常，属于 Loon 端通知展示限制，可只保留关键成功/失败通知
 
 ---
 
-**最后更新**：2026-04-08  
-**版本**：1.0  
-**维护**：LoonMaster
+最后更新：2026-04-09
+版本：v5
+维护：CFSeededOptimizer
