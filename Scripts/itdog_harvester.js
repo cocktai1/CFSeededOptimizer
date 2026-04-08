@@ -302,7 +302,7 @@ function ping(ipAddress, hostName) {
     return new Promise(resolve => {
         $httpClient.get(
             {
-                url: `https://${ipAddress}/cdn-cgi/trace`,
+                url: `http://${ipAddress}/cdn-cgi/trace`,
                 headers: { "Host": hostName, "User-Agent": "Loon-CF-Hybrid" },
                 timeout: 3500,
                 node: "DIRECT"
@@ -337,7 +337,7 @@ async function samplePing(ipAddress, hostName) {
 
 async function runSingleProbe(ipAddress, hostName, pathName) {
     const begin = Date.now();
-    const url = `https://${ipAddress}${pathName}`;
+    const url = `http://${ipAddress}${pathName}`;
     const headers = { "Host": hostName, "User-Agent": "Loon-CF-Hybrid" };
     return new Promise(resolve => {
         $httpClient.get({ url, headers, timeout: PROBE_TIMEOUT, node: "DIRECT", "binary-mode": true }, (err, resp, data) => {
@@ -466,12 +466,12 @@ function buildMappingSuggestion(bestIp, targets) {
     return targets.map(domainName => ({
         domain: domainName,
         ip: bestIp,
-        host: `${domainName} = ${bestIp}`
+        host: `${domainName} = ${bestIp}, use-in-proxy=true`
     }));
 }
 
 function buildPluginSnippet(bestIp, targets) {
-    const lines = targets.map(domainName => `host, ${domainName}, ${bestIp}`);
+    const lines = targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`);
     return [
         "[Host]",
         ...lines,
@@ -480,16 +480,16 @@ function buildPluginSnippet(bestIp, targets) {
 }
 
 function buildHostSnippet(bestIp, targets) {
-    return targets.map(domainName => `${domainName} = ${bestIp}`).join("\n");
+    return targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`).join("\n");
 }
 
 function buildGeneratedPlugin(bestIp, targets) {
-    const hostLines = targets.map(domainName => `host, ${domainName}, ${bestIp}`).join("\n");
+    const hostLines = targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`).join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
         "#!author=@LoonMaster-Engine",
-        "#!icon=https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f4e1.png",
+        "#!icon=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Cloudflare.png",
         "#!system=ios",
         "",
         "[Host]",
@@ -576,9 +576,28 @@ async function main() {
     console.log(`📊 ITDog状态: 成功=${localSeedResult.stats.itdogSuccess} 被拦截=${localSeedResult.stats.itdogBlocked} DoH回退命中=${localSeedResult.stats.dohFallbackHits}`);
 
     const targetDnsIps = [];
+    const validTargetDomains = [];
+    const invalidTargetDomains = [];
     for (const domainName of targetDomains) {
         const ips = await fetchDoHARecords(domainName);
-        targetDnsIps.push(...ips.filter(isCloudflareIPv4));
+        const cfIps = ips.filter(isCloudflareIPv4);
+        if (cfIps.length) {
+            validTargetDomains.push(domainName);
+            targetDnsIps.push(...cfIps);
+        } else {
+            invalidTargetDomains.push(domainName);
+        }
+    }
+
+    if (!validTargetDomains.length) {
+        console.log("❌ 你填写的目标域名没有解析到 Cloudflare IP，已跳过 host 映射。");
+        $notification.post({
+            title: "⚠️ 目标域名不是 CF 域名",
+            message: "未检测到 Cloudflare 解析结果，已停止 host 映射",
+            sound: "default"
+        });
+        $done();
+        return;
     }
 
     const candidatePool = uniqueIPv4List([
@@ -601,7 +620,7 @@ async function main() {
     console.log(`🏁 候选池就绪: ${candidatePool.length} 个IP`);
 
     const perDomainRanking = [];
-    for (const domainName of targetDomains) {
+    for (const domainName of validTargetDomains) {
         const rows = await evaluateCandidates(candidatePool, domainName);
         perDomainRanking.push({ domainName, rows: rows.slice(0, 12) });
         const top = rows[0] || null;
@@ -637,11 +656,11 @@ async function main() {
     })).sort((a, b) => a.score - b.score);
 
     const best = finalRanking[0];
-    const mappingSuggestion = buildMappingSuggestion(best.ip, targetDomains);
-    const pluginSnippet = buildPluginSnippet(best.ip, targetDomains);
-    const hostSnippet = buildHostSnippet(best.ip, targetDomains);
+    const mappingSuggestion = buildMappingSuggestion(best.ip, validTargetDomains);
+    const pluginSnippet = buildPluginSnippet(best.ip, validTargetDomains);
+    const hostSnippet = buildHostSnippet(best.ip, validTargetDomains);
 
-    const gistSynced = await syncBestToGist(best.ip, targetDomains);
+    const gistSynced = await syncBestToGist(best.ip, validTargetDomains);
 
     const output = {
         seed_domains: seedDomains,
@@ -654,6 +673,8 @@ async function main() {
             strategies: ["cloud_seed_pool", "itdog_or_doh", "local_benchmark"],
             harvest_method: "hybrid_cloud_local",
             target_domains: targetDomains,
+            valid_target_domains: validTargetDomains,
+            invalid_target_domains: invalidTargetDomains,
             candidate_pool_size: candidatePool.length,
             local_stats: localSeedResult.stats,
             cloud_seed_count: remoteIps.length,
