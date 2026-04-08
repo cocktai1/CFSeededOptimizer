@@ -431,12 +431,14 @@ function buildHostSnippet(bestIp, targets) {
 }
 
 function buildGeneratedPlugin(bestIp, targets) {
+    const generatedAt = new Date().toISOString();
     const hostLines = targets.map(domainName => `${domainName} = ${bestIp}, use-in-proxy=true`).join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
         "#!author=cocktai1",
         "#!icon=https://img.icons8.com/fluency/96/refresh.png",
+        `# generated_at=${generatedAt}`,
         "",
         "[Host]",
         hostLines,

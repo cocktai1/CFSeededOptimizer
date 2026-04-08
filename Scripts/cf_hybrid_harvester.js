@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v11";
+const SCRIPT_VERSION = "2026-04-09.v12";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -471,6 +471,25 @@ async function verifyIpAccessibleForDomain(ipAddress, domainName, strictMode) {
     return lastFailure;
 }
 
+async function verifyEdgeRestrictionOnRoot(ipAddress, domainName) {
+    const url = `http://${ipAddress}/`;
+    const headers = { "Host": domainName, "User-Agent": "Loon-CF-Hybrid" };
+    return new Promise(resolve => {
+        $httpClient.get({ url, headers, timeout: Math.max(2000, Math.min(5000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
+            if (err || !resp) {
+                resolve({ blocked: false, reason: "network_error" });
+                return;
+            }
+            const text = String(typeof data === "string" ? data : "").toLowerCase();
+            if (text.includes("error 1034") || text.includes("edge ip restricted")) {
+                resolve({ blocked: true, reason: "edge_ip_restricted_1034_root" });
+                return;
+            }
+            resolve({ blocked: false, reason: "ok" });
+        });
+    });
+}
+
 async function verifyIpAccessibleForDomains(ipAddress, domains) {
     for (const domainName of domains) {
         const result = await verifyIpAccessibleForDomain(ipAddress, domainName, true);
@@ -570,12 +589,14 @@ function buildHostSnippet(mappings) {
 }
 
 function buildGeneratedPlugin(mappings) {
+    const generatedAt = new Date().toISOString();
     const hostLines = mappings.map(item => `${item.domain} = ${item.ip}, use-in-proxy=true`).join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
         "#!author=cocktai1",
         "#!icon=https://img.icons8.com/fluency/96/refresh.png",
+        `# generated_at=${generatedAt}`,
         "",
         "[Host]",
         hostLines,
@@ -902,6 +923,11 @@ async function main() {
             if (!ipAddress) continue;
             const accessResult = await verifyIpAccessibleForDomain(ipAddress, domainName, strictAccess);
             if (accessResult.ok) {
+                const rootGuard = await verifyEdgeRestrictionOnRoot(ipAddress, domainName);
+                if (rootGuard.blocked) {
+                    rejectedOptions.push({ domain: domainName, source: option.source, ip: ipAddress, reason: rootGuard.reason });
+                    continue;
+                }
                 selected = option;
                 break;
             }
@@ -911,10 +937,15 @@ async function main() {
         if (!selected && onFailStrategy === "keep_current") {
             const keepIp = currentHostMap ? currentHostMap[domainName] : "";
             if (keepIp && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(keepIp)) {
-                const keepCheck = await verifyIpAccessibleForDomain(keepIp, domainName, false);
+                const keepCheck = await verifyIpAccessibleForDomain(keepIp, domainName, true);
                 if (keepCheck.ok) {
-                    const keepEval = await evaluateSingleIpAcrossDomains(keepIp, [domainName]);
-                    selected = { source: "keep_current", row: keepEval };
+                    const keepRootGuard = await verifyEdgeRestrictionOnRoot(keepIp, domainName);
+                    if (!keepRootGuard.blocked) {
+                        const keepEval = await evaluateSingleIpAcrossDomains(keepIp, [domainName]);
+                        selected = { source: "keep_current", row: keepEval };
+                    } else {
+                        rejectedOptions.push({ domain: domainName, source: "keep_current", ip: keepIp, reason: keepRootGuard.reason });
+                    }
                 } else {
                     rejectedOptions.push({ domain: domainName, source: "keep_current", ip: keepIp, reason: keepCheck.reason || "access_blocked" });
                 }
