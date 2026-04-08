@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v1";
+const SCRIPT_VERSION = "2026-04-09.v2";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -33,6 +33,7 @@ const JITTER_WEIGHT = Number.parseFloat(String(ARG.CF_JITTER_WEIGHT || "0.9")) |
 const PROBE_PATH = String(ARG.CF_PROBE_PATH || "/system/info/public,/web/index.html").trim();
 const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10) || 6000;
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
+const EVAL_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_EVAL_CONCURRENCY || "4"), 10) || 4));
 
 const STORE_RESULT_KEY = "CF_HYBRID_HARVEST_RESULT";
 const STORE_BEST_KEY = "CF_LOCAL_BEST_IP_RESULT";
@@ -322,6 +323,24 @@ function calcScore(metrics) {
     return Math.round(metrics.avg + metrics.jitter * JITTER_WEIGHT + lossPenalty);
 }
 
+async function mapWithConcurrency(items, concurrency, worker) {
+    const size = Math.max(1, Math.min(concurrency, items.length || 1));
+    const results = new Array(items.length);
+    let cursor = 0;
+
+    const runners = Array.from({ length: size }, async () => {
+        while (true) {
+            const index = cursor;
+            cursor += 1;
+            if (index >= items.length) return;
+            results[index] = await worker(items[index], index);
+        }
+    });
+
+    await Promise.all(runners);
+    return results;
+}
+
 function ping(ipAddress, hostName) {
     return new Promise(resolve => {
         const startedAt = Date.now();
@@ -358,7 +377,7 @@ async function samplePing(ipAddress, hostName) {
 async function evaluateCandidates(candidates, hostName) {
     const aggregate = new Map();
     for (let round = 0; round < EVAL_ROUNDS; round += 1) {
-        const roundResults = await Promise.all(candidates.map(ipAddress => samplePing(ipAddress, hostName)));
+        const roundResults = await mapWithConcurrency(candidates, EVAL_CONCURRENCY, (ipAddress) => samplePing(ipAddress, hostName));
         for (const row of roundResults) {
             const current = aggregate.get(row.ip) || { delay: 0, jitter: 0, successRate: 0, score: 0, count: 0 };
             current.delay += row.delay;
@@ -379,6 +398,8 @@ async function evaluateCandidates(candidates, hostName) {
         probeKbps: null
     }));
 
+    base.sort((a, b) => a.score - b.score);
+
     if (!PROBE_PATH) return base;
 
     const probeTargets = base.slice(0, Math.min(10, base.length));
@@ -388,7 +409,7 @@ async function evaluateCandidates(candidates, hostName) {
     })));
 
     const probeMap = new Map(probeResults.map(item => [item.ip, item.probe]));
-    return base.map(row => {
+    const scored = base.map(row => {
         const probe = probeMap.get(row.ip);
         if (!probe) return row;
         const kbps = Number.isFinite(probe.kbps) ? probe.kbps : 0;
@@ -398,6 +419,9 @@ async function evaluateCandidates(candidates, hostName) {
             score: row.score + Math.max(0, MIN_PROBE_KBPS - kbps)
         };
     });
+
+    scored.sort((a, b) => a.score - b.score);
+    return scored;
 }
 
 function buildMappingSuggestion(bestIp, targets) {
