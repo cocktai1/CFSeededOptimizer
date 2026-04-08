@@ -489,7 +489,7 @@ function buildGeneratedPlugin(bestIp, targets) {
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
         "#!author=@LoonMaster-Engine",
-        "#!icon=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Cloudflare.png",
+        "#!icon=https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f4e1.png",
         "#!system=ios",
         "",
         "[Host]",

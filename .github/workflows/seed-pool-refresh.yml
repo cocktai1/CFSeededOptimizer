@@ -54,7 +54,7 @@ on:
       enable_location_aware:
         description: 'Enable location-aware ITDog harvesting'
         required: false
-        default: false
+        default: true
         type: boolean
   schedule:
     - cron: '15 */12 * * *'
@@ -66,6 +66,17 @@ jobs:
   harvest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS || 'time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com' }}
+      CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS || '12' }}
+      CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT || '80' }}
+      CF_HARVEST_STRATEGIES: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.enable_location_aware == 'false') && 'dns' || vars.CF_HARVEST_STRATEGIES || 'dns,itdog_location' }}
+      CF_HARVEST_CITY: ${{ github.event.inputs.city || vars.CF_HARVEST_CITY || '成都' }}
+      CF_HARVEST_ISP: ${{ github.event.inputs.isp || vars.CF_HARVEST_ISP || '电信' }}
+      CF_HARVEST_SPEED_PREFERENCE: ${{ github.event.inputs.speed_preference || vars.CF_HARVEST_SPEED_PREFERENCE || 'balanced' }}
+      CF_HARVEST_NETWORK_TYPE: ${{ github.event.inputs.network_type || vars.CF_HARVEST_NETWORK_TYPE || 'fixed' }}
+      CF_HARVEST_PREFER_FRESH: ${{ vars.CF_HARVEST_PREFER_FRESH || 'true' }}
+      CF_OUTPUT_FILE: data/seed_pool.json
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -76,22 +87,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install optional dependencies for location-aware harvesting
-        if: github.event.inputs.enable_location_aware == 'true'
+        if: contains(env.CF_HARVEST_STRATEGIES, 'itdog_location')
         run: |
           pip install requests
 
       - name: Harvest Cloudflare seed pool
-        env:
-          CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS || 'time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com' }}
-          CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS || '12' }}
-          CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT || '80' }}
-          CF_HARVEST_STRATEGIES: ${{ github.event.inputs.enable_location_aware == 'true' && 'dns,itdog_location' || vars.CF_HARVEST_STRATEGIES || 'dns' }}
-          CF_HARVEST_CITY: ${{ github.event.inputs.city || vars.CF_HARVEST_CITY || '成都' }}
-          CF_HARVEST_ISP: ${{ github.event.inputs.isp || vars.CF_HARVEST_ISP || '电信' }}
-          CF_HARVEST_SPEED_PREFERENCE: ${{ github.event.inputs.speed_preference || vars.CF_HARVEST_SPEED_PREFERENCE || 'balanced' }}
-          CF_HARVEST_NETWORK_TYPE: ${{ github.event.inputs.network_type || vars.CF_HARVEST_NETWORK_TYPE || 'fixed' }}
-          CF_HARVEST_PREFER_FRESH: ${{ vars.CF_HARVEST_PREFER_FRESH || 'true' }}
-          CF_OUTPUT_FILE: data/seed_pool.json
         run: |
           python tools/seed_pool_harvest.py
 
