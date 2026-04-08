@@ -201,15 +201,122 @@ CF_HARVEST_STRATEGIES=itdog
 
 执行后自动合并两个策略的结果，产出更丰富的候选池。
 
+#### 3️⃣ 位置感知 ITDog 采集器（Location-Aware ITDog Harvester）
+
+**实现文件**：[tools/strategies/location_aware_itdog_harvester.py](tools/strategies/location_aware_itdog_harvester.py)
+
+**特点**：
+- 支持 **12 个城市**选择（成都、北京、上海、广州、深圳、杭州、南京、武汉、西安、重庆、苏州、天津）
+- 支持 **5 种运营商**选择（电信、联通、移动、铁通、教育网）
+- 支持 **4 种延迟偏好**（极速、快速、均衡、稳定）
+- 支持 **3 种网络类型**（固定宽带、4G、5G）
+- IP 新鲜度偏好配置
+- 自动降级容错（失败时）
+
+**使用场景**：
+- 针对特定网络环境优化（关键）
+- 多地区部署时分别采集优化
+- ISP 路由特性差异大时效果明显
+
+**两种运行模式**：
+
+**模式 A：GitHub Actions 手动运行** ⭐ **推荐**（高度定制化）
+
+1. 打开仓库 Actions 页面
+2. 选择 "CF Seed Pool Refresh" 工作流
+3. 点击 **"Run workflow"** 按钮
+4. 弹窗中填写参数：
+   ```
+   ✓ Target city: 选择你所在城市（默认成都）
+   ✓ Target ISP: 选择你的运营商（默认电信）
+   ✓ Speed preference: 选择延迟偏好（默认 balanced）
+   ✓ Network type: 选择网络类型（默认固定宽带）
+   ✓ Enable location-aware: ☑  启用位置感知采集
+   ```
+5. 点击 **"Run workflow"** 执行
+6. 等待 3-5 分钟完成，自动 commit 结果
+
+**模式 B：GitHub Actions 变量配置**（自动化）
+
+在仓库 Settings → Secrets and variables → Variables 中配置：
+
+| 变量名 | 推荐值 | 说明 |
+| --- | --- | --- |
+| `CF_HARVEST_STRATEGIES` | `dns,itdog_location` | 启用位置感知策略 |
+| `CF_HARVEST_CITY` | `成都` | 默认城市 |
+| `CF_HARVEST_ISP` | `电信` | 默认运营商 |
+| `CF_HARVEST_SPEED_PREFERENCE` | `balanced` | 延迟偏好 |
+| `CF_HARVEST_NETWORK_TYPE` | `fixed` | 网络类型 |
+| `CF_HARVEST_PREFER_FRESH` | `true` | 偏好新鲜 IP |
+
+设置后，GA 将在每 12h 自动执行位置感知采集。
+
+**模式 C：命令行本地运行**（开发/测试）
+
+```bash
+# 成都电信，极速模式
+python tools/seed_pool_harvest.py \
+  --strategies itdog_location \
+  --city 成都 \
+  --isp 电信 \
+  --speed-preference ultra_fast \
+  --output data/seed_pool.json
+
+# 北京联通，稳定模式，4G 网络
+python tools/seed_pool_harvest.py \
+  --strategies dns,itdog_location \
+  --city 北京 \
+  --isp 联通 \
+  --speed-preference stable \
+  --network-type 4g
+```
+
+### 城市支持列表
+
+| 城市代码 | 中文名 | 区域 | 覆盖范围 |
+| --- | --- | --- | --- |
+| `成都` | Chengdu | 西南 | 成都、周边省份 |
+| `北京` | Beijing | 华北 | 北京、华北地区 |
+| `上海` | Shanghai | 华东 | 上海、长三角 |
+| `广州` | Guangzhou | 华南 | 广州、珠三角 |
+| `深圳` | Shenzhen | 华南 | 深圳、粤港澳 |
+| `杭州` | Hangzhou | 华东 | 杭州、浙江 |
+| `南京` | Nanjing | 华东 | 南京、江苏 |
+| `武汉` | Wuhan | 华中 | 武汉、中部 |
+| `西安` | Xian | 西北 | 西安、西北 |
+| `重庆` | Chongqing | 西南 | 重庆、西南 |
+| `苏州` | Suzhou | 华东 | 苏州、江南 |
+| `天津` | Tianjin | 华北 | 天津、环渤海 |
+
+### 运营商支持列表
+
+| 运营商 | 中文名 | 说明 | 典型特性 |
+| --- | --- | --- | --- |
+| `电信` | Telecom | 中国电信 | 骨干网优先，南方主导 |
+| `联通` | Unicom | 中国联通 | 全国均衡，北方优势 |
+| `移动` | Mobile | 中国移动 | 用户最多，覆盖广 |
+| `铁通` | Tietong | 中国铁通 | 工业网络优先 |
+| `教育网` | CERNET | 中国教育网 | 学术优先，低延迟 |
+
+### 延迟偏好说明
+
+| 模式 | 阈值 | 适用场景 |
+| --- | --- | --- |
+| `ultra_fast` | < 10ms | 本地访问、竞技游戏、直播 |
+| `fast` | < 30ms | 视频流媒体、内容分发 |
+| `balanced` | < 80ms | 通用场景、大多数应用 |
+| `stable` | 任何 | 稳定性优先、弱网环境 |
+
 ### 策略选择建议
 
 | 场景 | 推荐方案 | 说明 |
 | --- | --- | --- |
 | 新用户、求稳定 | DNS 采集器（默认）| 已在 GA 中自动运行，无需配置 |
 | 想要更多补充候选 | DNS + Loon ITDog 手动 | 定期 GA DNS，按需 Loon ITDog 补充 |
-| 想要完全自动化 | GA 双策略（DNS+ITDog） | 配置 `CF_HARVEST_STRATEGIES=dns,itdog`，自动合并 |
-| 追求最大灵活性 | 纯 ITDog 本地手动 | 禁用 GA，完全由用户在 Loon 中按需采集 |
-| 追求最小手机负载 | GA DNS（自动）| 最轻量方案，Loon 只做优选不做采集 |
+| 追求最优 IP 匹配 | GA 位置感知采集 | 根据城市/ISP 采集，效果最好 |
+| 多地区/多 ISP 部署 | 多次位置感知采集 | 分别为不同地区采集最优 IP |
+| 完全自动化方案 | GA 双策略或三策略 | 配置变量，自动化无人值守 |
+| 追求最小手机负载 | GA 采集（任何）| 手机只做优选，采集全部 GA 承载 |
 
 ### 多策略合并规则
 
@@ -219,6 +326,7 @@ CF_HARVEST_STRATEGIES=itdog
 2. **域名验证**：统计所有策略的有效/无效域名
 3. **元数据记录**：在 `extended` 字段记录各策略耗时和贡献度
 4. **格式统一**：最终都输出标准 `seed_pool.json` 格式
+5. **位置信息保存**：记录采集时的城市/ISP 参数
 
 **合并输出示例**：
 ```json
@@ -229,13 +337,19 @@ CF_HARVEST_STRATEGIES=itdog
   "ips": [...],
   "updated_at": 1712500000,
   "source": "github-actions",
-  "strategies": ["dns", "itdog"],
+  "strategies": ["dns", "itdog_location"],
   "extended": {
-    "strategies": ["dns", "itdog"],
+    "strategies": ["dns", "itdog_location"],
     "strategy_count": 2,
+    "location_context": {
+      "city": "成都",
+      "isp": "电信",
+      "speed_preference": "balanced",
+      "network_type": "fixed"
+    },
     "strategy_details": [
       {"name": "dns", "ips": 45, "elapsed_ms": 325},
-      {"name": "itdog", "ips": 32, "elapsed_ms": 1200}
+      {"name": "itdog_location_成都_电信", "ips": 38, "elapsed_ms": 1500}
     ]
   }
 }
