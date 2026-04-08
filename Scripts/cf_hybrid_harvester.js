@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v13";
+const SCRIPT_VERSION = "2026-04-09.v14";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -477,7 +477,7 @@ async function verifyEdgeRestrictionOnRoot(ipAddress, domainName) {
     const singleCheck = () => new Promise(resolve => {
         $httpClient.get({ url, headers, timeout: Math.max(2000, Math.min(5000, PROBE_TIMEOUT)), node: "DIRECT" }, (err, resp, data) => {
             if (err || !resp) {
-                resolve({ blocked: true, reason: "network_error_root" });
+                resolve({ blocked: false, reason: "network_error_root_soft" });
                 return;
             }
             const status = Number(resp.status || 0);
@@ -486,8 +486,12 @@ async function verifyEdgeRestrictionOnRoot(ipAddress, domainName) {
                 resolve({ blocked: true, reason: "edge_ip_restricted_1034_root" });
                 return;
             }
+            if (status >= 500) {
+                resolve({ blocked: true, reason: `http_${status}_root_hard` });
+                return;
+            }
             if (status >= 400) {
-                resolve({ blocked: true, reason: `http_${status}_root` });
+                resolve({ blocked: false, reason: `http_${status}_root_soft` });
                 return;
             }
             resolve({ blocked: false, reason: "ok" });
@@ -898,6 +902,7 @@ async function main() {
     const selectedMappings = [];
     const domainComparisons = [];
     const rejectedOptions = [];
+    const softRootWarnings = [];
     const failedDomains = [];
 
     for (const domainName of validTargetDomains) {
@@ -940,6 +945,9 @@ async function main() {
                     rejectedOptions.push({ domain: domainName, source: option.source, ip: ipAddress, reason: rootGuard.reason });
                     continue;
                 }
+                if (rootGuard.reason && rootGuard.reason !== "ok") {
+                    softRootWarnings.push({ domain: domainName, source: option.source, ip: ipAddress, reason: rootGuard.reason });
+                }
                 selected = option;
                 break;
             }
@@ -953,6 +961,9 @@ async function main() {
                 if (keepCheck.ok) {
                     const keepRootGuard = await verifyEdgeRestrictionOnRoot(keepIp, domainName);
                     if (!keepRootGuard.blocked) {
+                        if (keepRootGuard.reason && keepRootGuard.reason !== "ok") {
+                            softRootWarnings.push({ domain: domainName, source: "keep_current", ip: keepIp, reason: keepRootGuard.reason });
+                        }
                         const keepEval = await evaluateSingleIpAcrossDomains(keepIp, [domainName]);
                         selected = { source: "keep_current", row: keepEval };
                     } else {
@@ -1007,6 +1018,11 @@ async function main() {
         return;
     }
 
+    if (softRootWarnings.length) {
+        console.log(`⚠️ root软告警: ${softRootWarnings.length} 条（4xx/网络抖动已降级处理）`);
+        softRootWarnings.forEach(item => console.log(`  - ${item.domain} ${item.source} ${item.ip}: ${item.reason}`));
+    }
+
     if (failedDomains.length) {
         console.log(`⚠️ 以下域名未找到可写入候选，将按策略处理: ${failedDomains.join(", ")}`);
     }
@@ -1049,7 +1065,8 @@ async function main() {
             final_best_source: overallBest.source,
             comparison: {
                 by_domain: domainComparisons,
-                rejected_candidates: rejectedOptions
+                rejected_candidates: rejectedOptions,
+                soft_root_warnings: softRootWarnings
             },
             final_ranking_top10: finalRanking.slice(0, 10),
             selected_mappings: selectedMappingsSorted,
