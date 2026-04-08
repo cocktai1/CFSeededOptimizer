@@ -13,8 +13,20 @@ const USE_IN_PROXY = ((ARG.CF_USE_IN_PROXY || "on") + "").trim().toLowerCase();
 const LOW_NOISE_MODE = ((ARG.CF_LOW_NOISE_MODE || "on") + "").trim().toLowerCase();
 const AUTO_REFRESH_SUB = ((ARG.CF_AUTO_REFRESH_SUB || "on") + "").trim().toLowerCase();
 
-const SEED_DOMAINS_RAW = (ARG.CF_SEED_DOMAINS || "").trim();
+const DEFAULT_SEED_DOMAIN_GROUPS = {
+    tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
+    tier2: ["www.cloudflare.com", "developers.cloudflare.com", "workers.cloudflare.com", "one.one.one.one"],
+    tier3: ["shopee.sg", "shopee.tw", "icook.tw", "www.digitalocean.com", "cloudflare.steamstatic.com"],
+};
+const DEFAULT_SEED_DOMAINS = [
+    ...DEFAULT_SEED_DOMAIN_GROUPS.tier1,
+    ...DEFAULT_SEED_DOMAIN_GROUPS.tier2,
+    ...DEFAULT_SEED_DOMAIN_GROUPS.tier3,
+];
+
+const SEED_DOMAINS_RAW = (ARG.CF_SEED_DOMAINS || DEFAULT_SEED_DOMAINS.join("\n")).trim();
 const TARGET_DOMAINS_RAW = (ARG.CF_TARGET_DOMAINS || "").trim();
+const SEED_POOL_URL = (ARG.CF_SEED_POOL_URL || "https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json").trim();
 
 const MIN_IMPROVEMENT = Number.parseInt((ARG.CF_MIN_IMPROVEMENT || "100").trim(), 10) || 100;
 const STICKY_MS = Number.parseInt((ARG.CF_STICKY_MS || "220").trim(), 10) || 220;
@@ -60,6 +72,48 @@ function parseDomainList(rawValue) {
             .map(item => item.trim().toLowerCase())
             .filter(Boolean)
     ));
+}
+
+function parseSeedPoolPayload(rawValue) {
+    if (!rawValue) return null;
+    try {
+        const payload = JSON.parse(rawValue);
+        const ips = Array.isArray(payload.ips) ? uniqueIPv4List(payload.ips) : [];
+        const seedDomains = Array.isArray(payload.seed_domains)
+            ? payload.seed_domains
+            : (Array.isArray(payload.seedDomains) ? payload.seedDomains : []);
+        const validSeedDomains = Array.isArray(payload.valid_seed_domains)
+            ? payload.valid_seed_domains
+            : (Array.isArray(payload.validSeeds) ? payload.validSeeds : []);
+        const invalidSeedDomains = Array.isArray(payload.invalid_seed_domains)
+            ? payload.invalid_seed_domains
+            : (Array.isArray(payload.invalidSeeds) ? payload.invalidSeeds : []);
+        const updatedAt = Number.parseInt(String(payload.updated_at || payload.updatedAt || "0"), 10) || 0;
+
+        return {
+            seedDomains: seedDomains.map(item => String(item).trim().toLowerCase()).filter(Boolean),
+            validSeedDomains: validSeedDomains.map(item => String(item).trim().toLowerCase()).filter(Boolean),
+            invalidSeedDomains: invalidSeedDomains.map(item => String(item).trim().toLowerCase()).filter(Boolean),
+            ips,
+            updatedAt,
+            source: String(payload.source || "remote")
+        };
+    } catch (error) {
+        return null;
+    }
+}
+
+async function fetchRemoteSeedPool(url) {
+    if (!url) return null;
+    return new Promise(resolve => {
+        $httpClient.get({ url, timeout: 5000, node: "DIRECT" }, (err, resp, data) => {
+            if (err || !resp || resp.status !== 200 || !data) {
+                resolve(null);
+                return;
+            }
+            resolve(parseSeedPoolPayload(data));
+        });
+    });
 }
 
 function uniqueIPv4List(items) {
@@ -513,7 +567,29 @@ async function loadSeedPool(seedDomains) {
         return cached;
     }
 
-    const refreshed = await collectSeedPool(seedDomains);
+    const remotePool = await fetchRemoteSeedPool(SEED_POOL_URL);
+    if (remotePool && Array.isArray(remotePool.ips) && remotePool.ips.length > 0) {
+        const remoteFingerprint = Array.isArray(remotePool.seedDomains) ? remotePool.seedDomains.join("|") : "";
+        if (currentFingerprint && remoteFingerprint && remoteFingerprint !== currentFingerprint) {
+            console.log("ℹ️ 远端种子池与本地种子域名列表不完全一致，仍优先使用远端候选池。");
+        }
+
+        const payload = {
+            ...remotePool,
+            seedDomains: remotePool.seedDomains.length ? remotePool.seedDomains : seedDomains,
+            source: "remote-json"
+        };
+        $persistentStore.write(JSON.stringify(payload), SEED_CACHE_KEY);
+        $persistentStore.write(String(payload.updatedAt || Date.now()), SEED_CACHE_TS_KEY);
+        return payload;
+    }
+
+    if (cached && Array.isArray(cached.ips) && cached.ips.length > 0) {
+        console.log("ℹ️ 远端种子池暂不可用，已回退到本地缓存。");
+        return cached;
+    }
+
+    const refreshed = seedDomains.length > 0 ? await collectSeedPool(seedDomains) : { validSeeds: [], invalidSeeds: [], ips: [], updatedAt: Date.now(), seedDomains: [] };
     const payload = {
         ...refreshed,
         seedDomains,

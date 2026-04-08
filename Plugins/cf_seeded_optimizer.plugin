@@ -1,5 +1,5 @@
 #!name=CF Seeded Optimizer
-#!desc=种子域名喂候选池 + 目标域名最终优选 + 域名变更自动清理。支持逗号/换行输入多个域名，适合手机端低打扰运行。
+#!desc=三梯队种子域名喂候选池 + 目标域名最终优选 + 域名变更自动清理。支持逗号/换行输入多个域名，适合手机端低打扰运行。
 #!author=@Lee
 #!loon_version=3.2.1(733)
 #!icon=https://img.icons8.com/fluency/96/radar.png
@@ -8,7 +8,8 @@
 CF_TOKEN = input,"",tag=GitHub Token,desc=必填：用于更新 Gist 的 Token
 CF_GIST_ID = input,"",tag=Gist ID,desc=必填：用于写入映射文件
 CF_GIST_FILE = input,"CF_Seeded_HostMap.plugin",tag=Gist文件名,desc=同一 Gist 内的映射文件名
-CF_SEED_DOMAINS = input,"www.cloudflare.com\ndevelopers.cloudflare.com\nworkers.cloudflare.com\nblog.cloudflare.com\none.one.one.one\ncloudflarestatus.com\ncdnjs.cloudflare.com",tag=CF种子域名,desc=支持英文逗号或换行分隔多个稳定 CF 域名
+CF_SEED_POOL_URL = input,"https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/data/seed_pool.json",tag=远端种子池,desc=GitHub Actions 产出的 seed_pool.json 地址
+CF_SEED_DOMAINS = input,"time.cloudflare.com\nspeed.cloudflare.com\ncdnjs.cloudflare.com\nwww.cloudflare.com\ndevelopers.cloudflare.com\nworkers.cloudflare.com\none.one.one.one\nshopee.sg\nshopee.tw\nicook.tw\nwww.digitalocean.com\ncloudflare.steamstatic.com",tag=CF种子域名,desc=三梯队默认值，支持英文逗号或换行分隔
 CF_TARGET_DOMAINS = input,"oklink00.leecloud.qzz.io\nemby-link00.camilacatlina2.workers.dev",tag=目标域名,desc=你的反代加速域名，支持英文逗号或换行分隔
 CF_MAX_SEED_DOMAINS = input,"12",tag=种子域名上限,desc=参与采样的种子域名数量上限
 CF_CANDIDATE_LIMIT = input,"30",tag=候选IP上限,desc=最终参与优选的候选 IP 数量
@@ -37,11 +38,8 @@ CF_NOTIFY_COOLDOWN_MINUTES = input,"180",tag=通知冷却(分钟),desc=低打扰
 CF_AUTO_REFRESH_SUB = input,"on",tag=更新后刷新提醒,desc=on/off：优选成功后推送一键刷新订阅通知
 
 [Script]
-# 种子池刷新
-cron "15 */12 * * *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seed_harvest.js, tag=CF种子池刷新, argument=[{CF_SEED_DOMAINS},{CF_SEED_POOL_LIMIT},{CF_MAX_SEED_DOMAINS}]
-
 # 定时优选
-cron "15 * * * *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seeded_optimize.js, tag=CF种子优选, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_GENERATED_ICON},{CF_OUTPUT_MODE},{CF_USE_IN_PROXY},{CF_LOW_NOISE_MODE},{CF_AUTO_REFRESH_SUB},{CF_SEED_DOMAINS},{CF_TARGET_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_FALLBACK_TARGET_LIMIT},{CF_SEED_REFRESH_MINUTES},{CF_MIN_VALID_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_MIN_IMPROVEMENT},{CF_STICKY_MS},{CF_MIN_SWITCH_MINUTES},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_REQUIRE_BEAT_DNS},{CF_DNS_MARGIN_MS},{CF_MAX_ACCEPT_DELAY},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_BAD_RUN_PAUSE_MINUTES},{CF_NOTIFY_COOLDOWN_MINUTES}]
+cron "15 * * * *" script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seeded_optimize.js, tag=CF种子优选, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_SEED_POOL_URL},{CF_GENERATED_ICON},{CF_OUTPUT_MODE},{CF_USE_IN_PROXY},{CF_LOW_NOISE_MODE},{CF_AUTO_REFRESH_SUB},{CF_SEED_DOMAINS},{CF_TARGET_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_FALLBACK_TARGET_LIMIT},{CF_SEED_REFRESH_MINUTES},{CF_MIN_VALID_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_MIN_IMPROVEMENT},{CF_STICKY_MS},{CF_MIN_SWITCH_MINUTES},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_REQUIRE_BEAT_DNS},{CF_DNS_MARGIN_MS},{CF_MAX_ACCEPT_DELAY},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_BAD_RUN_PAUSE_MINUTES},{CF_NOTIFY_COOLDOWN_MINUTES}]
 
 # 网络切换重测
-network-changed script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seeded_optimize.js, tag=CF种子重测, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_GENERATED_ICON},{CF_OUTPUT_MODE},{CF_USE_IN_PROXY},{CF_LOW_NOISE_MODE},{CF_AUTO_REFRESH_SUB},{CF_SEED_DOMAINS},{CF_TARGET_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_FALLBACK_TARGET_LIMIT},{CF_SEED_REFRESH_MINUTES},{CF_MIN_VALID_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_MIN_IMPROVEMENT},{CF_STICKY_MS},{CF_MIN_SWITCH_MINUTES},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_REQUIRE_BEAT_DNS},{CF_DNS_MARGIN_MS},{CF_MAX_ACCEPT_DELAY},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_BAD_RUN_PAUSE_MINUTES},{CF_NOTIFY_COOLDOWN_MINUTES}]
+network-changed script-path=https://raw.githubusercontent.com/cocktai1/CFSeededOptimizer/refs/heads/main/Scripts/cf_seeded_optimize.js, tag=CF种子重测, argument=[{CF_TOKEN},{CF_GIST_ID},{CF_GIST_FILE},{CF_SEED_POOL_URL},{CF_GENERATED_ICON},{CF_OUTPUT_MODE},{CF_USE_IN_PROXY},{CF_LOW_NOISE_MODE},{CF_AUTO_REFRESH_SUB},{CF_SEED_DOMAINS},{CF_TARGET_DOMAINS},{CF_CANDIDATE_LIMIT},{CF_SEED_POOL_LIMIT},{CF_FALLBACK_TARGET_LIMIT},{CF_SEED_REFRESH_MINUTES},{CF_MIN_VALID_SEED_DOMAINS},{CF_MAX_SEED_DOMAINS},{CF_MIN_IMPROVEMENT},{CF_STICKY_MS},{CF_MIN_SWITCH_MINUTES},{CF_EVAL_ROUNDS},{CF_PING_SAMPLES},{CF_JITTER_WEIGHT},{CF_REQUIRE_BEAT_DNS},{CF_DNS_MARGIN_MS},{CF_MAX_ACCEPT_DELAY},{CF_PROBE_PATH},{CF_PROBE_TIMEOUT},{CF_MIN_PROBE_KBPS},{CF_BAD_RUN_PAUSE_MINUTES},{CF_NOTIFY_COOLDOWN_MINUTES}]

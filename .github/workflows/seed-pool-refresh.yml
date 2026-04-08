@@ -11,6 +11,7 @@ permissions:
 jobs:
   harvest:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,9 +23,9 @@ jobs:
 
       - name: Harvest Cloudflare seed pool
         env:
-          CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS }}
-          CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS }}
-          CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT }}
+          CF_SEED_DOMAINS: ${{ vars.CF_SEED_DOMAINS || 'time.cloudflare.com,speed.cloudflare.com,cdnjs.cloudflare.com,www.cloudflare.com,developers.cloudflare.com,workers.cloudflare.com,one.one.one.one,shopee.sg,shopee.tw,icook.tw,www.digitalocean.com,cloudflare.steamstatic.com' }}
+          CF_MAX_SEED_DOMAINS: ${{ vars.CF_MAX_SEED_DOMAINS || '12' }}
+          CF_SEED_POOL_LIMIT: ${{ vars.CF_SEED_POOL_LIMIT || '80' }}
           CF_OUTPUT_FILE: data/seed_pool.json
         run: |
           python tools/seed_pool_harvest.py

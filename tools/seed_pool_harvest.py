@@ -37,6 +37,33 @@ CF_IPV4_CIDRS = [
     "198.41.128.0/17",
 ]
 
+DEFAULT_SEED_DOMAIN_GROUPS = {
+    "tier1": [
+        "time.cloudflare.com",
+        "speed.cloudflare.com",
+        "cdnjs.cloudflare.com",
+    ],
+    "tier2": [
+        "www.cloudflare.com",
+        "developers.cloudflare.com",
+        "workers.cloudflare.com",
+        "one.one.one.one",
+    ],
+    "tier3": [
+        "shopee.sg",
+        "shopee.tw",
+        "icook.tw",
+        "www.digitalocean.com",
+        "cloudflare.steamstatic.com",
+    ],
+}
+
+DEFAULT_SEED_DOMAINS = [
+    *DEFAULT_SEED_DOMAIN_GROUPS["tier1"],
+    *DEFAULT_SEED_DOMAIN_GROUPS["tier2"],
+    *DEFAULT_SEED_DOMAIN_GROUPS["tier3"],
+]
+
 
 @dataclass(frozen=True)
 class HarvestResult:
@@ -129,7 +156,11 @@ def harvest(seed_domains: List[str], max_ips: int) -> HarvestResult:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Harvest Cloudflare seed IPs from seed domains.")
-    parser.add_argument("--seed-domains", default=os.environ.get("CF_SEED_DOMAINS", ""), help="Comma/newline separated seed domains")
+    parser.add_argument(
+        "--seed-domains",
+        default=os.environ.get("CF_SEED_DOMAINS", ",".join(DEFAULT_SEED_DOMAINS)),
+        help="Comma/newline separated seed domains",
+    )
     parser.add_argument("--max-seed-domains", type=int, default=int(os.environ.get("CF_MAX_SEED_DOMAINS", "12")), help="Maximum seed domains to process")
     parser.add_argument("--seed-pool-limit", type=int, default=int(os.environ.get("CF_SEED_POOL_LIMIT", "80")), help="Maximum number of seed IPs")
     parser.add_argument("--output", default=os.environ.get("CF_OUTPUT_FILE", "data/seed_pool.json"), help="Output JSON file")
