@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v16";
+const SCRIPT_VERSION = "2026-04-09.v17";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -269,15 +269,48 @@ function responseLooksBlocked(statusCode, bodyText, strictMode) {
 
 async function fetchRemoteSeedPool(url) {
     if (!url) return null;
-    return new Promise(resolve => {
-        $httpClient.get({ url, timeout: 5000, node: "DIRECT" }, (err, resp, data) => {
-            if (err || !resp || resp.status !== 200 || !data) {
-                resolve(null);
-                return;
-            }
-            resolve(parseSeedPoolPayload(data));
+
+    const candidateUrls = [url];
+    if (url.includes("raw.githubusercontent.com/cocktai1/CFSeededOptimizer") && url.includes("/data/seed_pool.json")) {
+        candidateUrls.push("https://cdn.jsdelivr.net/gh/cocktai1/CFSeededOptimizer@main/data/seed_pool.json");
+    }
+
+    let lastFailure = "";
+    for (let index = 0; index < candidateUrls.length; index += 1) {
+        const candidate = candidateUrls[index];
+        const result = await new Promise(resolve => {
+            $httpClient.get({ url: candidate, timeout: 5000, node: "DIRECT" }, (err, resp, data) => {
+                if (err || !resp || Number(resp.status || 0) !== 200 || !data) {
+                    resolve({ ok: false, reason: err ? String(err) : `http_${resp ? resp.status : 0}` });
+                    return;
+                }
+                const parsed = parseSeedPoolPayload(data);
+                if (!parsed) {
+                    resolve({ ok: false, reason: "invalid_json_payload" });
+                    return;
+                }
+                resolve({ ok: true, payload: parsed });
+            });
         });
-    });
+
+        if (result.ok) {
+            return {
+                payload: result.payload,
+                sourceUrl: candidate,
+                fallbackUsed: index > 0,
+                candidateCount: candidateUrls.length,
+            };
+        }
+        lastFailure = `${candidate} -> ${result.reason}`;
+    }
+
+    return {
+        payload: null,
+        sourceUrl: "",
+        fallbackUsed: false,
+        candidateCount: candidateUrls.length,
+        error: lastFailure || "remote_seed_pool_fetch_failed"
+    };
 }
 
 async function fetchDoHARecords(domainName) {
@@ -804,8 +837,15 @@ async function main() {
         console.log("ℹ️ 未配置业务探针路径，当前仅按延迟/抖动/成功率评分。");
     }
 
-    const remoteSeedPool = await fetchRemoteSeedPool(SEED_POOL_URL);
+    const remoteSeedResult = await fetchRemoteSeedPool(SEED_POOL_URL);
+    const remoteSeedPool = remoteSeedResult && remoteSeedResult.payload ? remoteSeedResult.payload : null;
     const remoteIps = remoteSeedPool ? remoteSeedPool.ips.filter(isCloudflareIPv4) : [];
+    if (!remoteSeedPool) {
+        const reason = remoteSeedResult && remoteSeedResult.error ? remoteSeedResult.error : "unknown";
+        console.log(`⚠️ 云端种子池拉取失败，已降级仅用本地候选: ${reason}`);
+    } else if (remoteSeedResult && remoteSeedResult.fallbackUsed) {
+        console.log(`ℹ️ 云端种子池使用备用源: ${remoteSeedResult.sourceUrl}`);
+    }
     console.log(`☁️ 云端种子池: ${remoteIps.length} 个IP`);
 
     const localSeedResult = await collectLocalSeedIPs(seedDomains);
