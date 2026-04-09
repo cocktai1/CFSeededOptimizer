@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v14";
+const SCRIPT_VERSION = "2026-04-09.v15";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -38,6 +38,7 @@ const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
 const EVAL_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_EVAL_CONCURRENCY || "4"), 10) || 4));
 const DNS_QUERY_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_DNS_CONCURRENCY || "4"), 10) || 4));
+const ROUND_ROBIN_LIMIT = Math.min(5, Math.max(1, Number.parseInt(String(ARG.CF_ROUND_ROBIN_LIMIT || "3"), 10) || 3));
 const STRICT_ACCESS_MODE = String(ARG.CF_STRICT_ACCESS_MODE || "on").trim().toLowerCase();
 const ON_FAIL_STRATEGY = String(ARG.CF_ON_FAIL_STRATEGY || "keep_current").trim().toLowerCase();
 const ACCESS_CHECK_PATHS_RAW = String(ARG.CF_ACCESS_CHECK_PATHS || "/cdn-cgi/trace").trim();
@@ -591,8 +592,16 @@ function buildMappingSuggestion(mappings) {
     }));
 }
 
-function buildPluginSnippet(mappings) {
-    const lines = mappings.map(item => `${item.domain} = ${item.ip}, use-in-proxy=true`);
+function formatRoundRobinHostLine(domainName, ips) {
+    const cleanedIps = uniqueIPv4List(ips);
+    if (!cleanedIps.length) return "";
+    return `${domainName} = ${cleanedIps.join(", ")}, use-in-proxy=true`;
+}
+
+function buildPluginSnippet(hostEntries) {
+    const lines = hostEntries
+        .map(item => formatRoundRobinHostLine(item.domain, item.ips))
+        .filter(Boolean);
     return [
         "[Host]",
         ...lines,
@@ -600,13 +609,19 @@ function buildPluginSnippet(mappings) {
     ].join("\n");
 }
 
-function buildHostSnippet(mappings) {
-    return mappings.map(item => `${item.domain} = ${item.ip}`).join("\n");
+function buildHostSnippet(hostEntries) {
+    return hostEntries
+        .map(item => formatRoundRobinHostLine(item.domain, item.ips))
+        .filter(Boolean)
+        .join("\n");
 }
 
-function buildGeneratedPlugin(mappings) {
+function buildGeneratedPlugin(hostEntries) {
     const generatedAt = new Date().toISOString();
-    const hostLines = mappings.map(item => `${item.domain} = ${item.ip}, use-in-proxy=true`).join("\n");
+    const hostLines = hostEntries
+        .map(item => formatRoundRobinHostLine(item.domain, item.ips))
+        .filter(Boolean)
+        .join("\n");
     return [
         "#!name=CF_HostMap",
         "#!desc=由 CF 混合优选脚本自动生成",
@@ -900,6 +915,7 @@ async function main() {
 
     const currentHostMap = await fetchCurrentGistHostMap();
     const selectedMappings = [];
+    const roundRobinHostEntries = [];
     const domainComparisons = [];
     const rejectedOptions = [];
     const softRootWarnings = [];
@@ -934,6 +950,7 @@ async function main() {
         if (hostmapBaseline) pushOption("current_hostmap", hostmapBaseline);
         options.sort((a, b) => a.row.score - b.row.score);
 
+        const acceptedRows = [];
         let selected = null;
         for (const option of options) {
             const ipAddress = option && option.row ? option.row.ip : "";
@@ -948,8 +965,19 @@ async function main() {
                 if (rootGuard.reason && rootGuard.reason !== "ok") {
                     softRootWarnings.push({ domain: domainName, source: option.source, ip: ipAddress, reason: rootGuard.reason });
                 }
+                acceptedRows.push({
+                    domain: domainName,
+                    ip: ipAddress,
+                    source: option.source,
+                    delay: option.row.delay,
+                    jitter: option.row.jitter,
+                    score: option.row.score,
+                    successRate: option.row.successRate,
+                    probeKbps: option.row.probeKbps
+                });
                 selected = option;
-                break;
+                if (acceptedRows.length >= ROUND_ROBIN_LIMIT) break;
+                continue;
             }
             rejectedOptions.push({ domain: domainName, source: option.source, ip: ipAddress, reason: accessResult.reason || "access_blocked" });
         }
@@ -965,6 +993,18 @@ async function main() {
                             softRootWarnings.push({ domain: domainName, source: "keep_current", ip: keepIp, reason: keepRootGuard.reason });
                         }
                         const keepEval = await evaluateSingleIpAcrossDomains(keepIp, [domainName]);
+                        if (!acceptedRows.some(item => item.ip === keepIp)) {
+                            acceptedRows.unshift({
+                                domain: domainName,
+                                ip: keepIp,
+                                source: "keep_current",
+                                delay: keepEval.delay,
+                                jitter: keepEval.jitter,
+                                score: keepEval.score,
+                                successRate: keepEval.successRate,
+                                probeKbps: keepEval.probeKbps
+                            });
+                        }
                         selected = { source: "keep_current", row: keepEval };
                     } else {
                         rejectedOptions.push({ domain: domainName, source: "keep_current", ip: keepIp, reason: keepRootGuard.reason });
@@ -986,8 +1026,13 @@ async function main() {
                 successRate: selected.row.successRate,
                 probeKbps: selected.row.probeKbps
             });
+            roundRobinHostEntries.push({
+                domain: domainName,
+                ips: uniqueIPv4List(acceptedRows.map(item => item.ip)).slice(0, ROUND_ROBIN_LIMIT)
+            });
         } else {
             failedDomains.push(domainName);
+            roundRobinHostEntries.push({ domain: domainName, ips: [] });
         }
 
         domainComparisons.push({
@@ -1031,8 +1076,8 @@ async function main() {
     const overallBest = selectedMappingsSorted[0];
 
     const mappingSuggestion = buildMappingSuggestion(selectedMappingsSorted);
-    const pluginSnippet = buildPluginSnippet(selectedMappingsSorted);
-    const hostSnippet = buildHostSnippet(selectedMappingsSorted);
+    const pluginSnippet = buildPluginSnippet(roundRobinHostEntries);
+    const hostSnippet = buildHostSnippet(roundRobinHostEntries);
 
     const gistSynced = await syncBestToGist(selectedMappingsSorted);
 
@@ -1070,6 +1115,7 @@ async function main() {
             },
             final_ranking_top10: finalRanking.slice(0, 10),
             selected_mappings: selectedMappingsSorted,
+            round_robin_mappings: roundRobinHostEntries,
             mapping_suggestion: mappingSuggestion,
             gist_snippet_host: hostSnippet,
             gist_snippet_plugin: pluginSnippet,
