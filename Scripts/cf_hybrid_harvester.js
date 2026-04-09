@@ -637,14 +637,14 @@ function buildGeneratedPlugin(hostEntries) {
     ].join("\n");
 }
 
-async function syncBestToGist(mappings) {
+async function syncBestToGist(hostEntries) {
     if (!hasValidGistAuth()) {
         console.log("ℹ️ 未配置 GitHub Token/Gist ID，跳过自动写入 Gist。仅保留本地结果。");
         return false;
     }
 
-    const hostContent = buildHostSnippet(mappings);
-    const pluginContent = buildGeneratedPlugin(mappings);
+    const hostContent = buildHostSnippet(hostEntries);
+    const pluginContent = buildGeneratedPlugin(hostEntries);
     const content = OUTPUT_MODE === "host" ? hostContent : pluginContent;
 
     const payload = {
@@ -1081,7 +1081,7 @@ async function main() {
     const pluginSnippet = buildPluginSnippet(roundRobinHostEntries);
     const hostSnippet = buildHostSnippet(roundRobinHostEntries);
 
-    const gistSynced = await syncBestToGist(selectedMappingsSorted);
+    const gistSynced = await syncBestToGist(roundRobinHostEntries);
 
     const output = {
         seed_domains: seedDomains,
