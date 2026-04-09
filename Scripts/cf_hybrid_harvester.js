@@ -3,7 +3,7 @@
 
 const ARG = (typeof $argument === "object" && $argument !== null) ? $argument : {};
 const isPlaceholder = (value) => typeof value === "string" && /^\{.+\}$/.test(value.trim());
-const SCRIPT_VERSION = "2026-04-09.v15";
+const SCRIPT_VERSION = "2026-04-09.v16";
 
 const DEFAULT_SEED_DOMAIN_GROUPS = {
     tier1: ["time.cloudflare.com", "speed.cloudflare.com", "cdnjs.cloudflare.com"],
@@ -32,13 +32,14 @@ const CANDIDATE_LIMIT = Math.min(120, Math.max(10, Number.parseInt(String(ARG.CF
 const MAX_IPS = Math.min(160, Math.max(20, Number.parseInt(String(ARG.CF_SEED_POOL_LIMIT || "80"), 10) || 80));
 const EVAL_ROUNDS = Math.min(5, Math.max(1, Number.parseInt(String(ARG.CF_EVAL_ROUNDS || "3"), 10) || 3));
 const PING_SAMPLES = Math.min(6, Math.max(2, Number.parseInt(String(ARG.CF_PING_SAMPLES || "4"), 10) || 4));
+const HOSTMAP_OUTPUT_MODE = String(ARG.CF_HOSTMAP_OUTPUT_MODE || "single").trim().toLowerCase();
+const ROUND_ROBIN_LIMIT = Math.min(5, Math.max(1, Number.parseInt(String(ARG.CF_ROUND_ROBIN_LIMIT || "3"), 10) || 3));
 const JITTER_WEIGHT = Number.parseFloat(String(ARG.CF_JITTER_WEIGHT || "0.9")) || 0.9;
 const PROBE_PATH = String(ARG.CF_PROBE_PATH || "/system/info/public,/web/index.html").trim();
 const PROBE_TIMEOUT = Number.parseInt(String(ARG.CF_PROBE_TIMEOUT || "6000"), 10) || 6000;
 const MIN_PROBE_KBPS = Number.parseInt(String(ARG.CF_MIN_PROBE_KBPS || "250"), 10) || 250;
 const EVAL_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_EVAL_CONCURRENCY || "4"), 10) || 4));
 const DNS_QUERY_CONCURRENCY = Math.min(8, Math.max(2, Number.parseInt(String(ARG.CF_DNS_CONCURRENCY || "4"), 10) || 4));
-const ROUND_ROBIN_LIMIT = Math.min(5, Math.max(1, Number.parseInt(String(ARG.CF_ROUND_ROBIN_LIMIT || "3"), 10) || 3));
 const STRICT_ACCESS_MODE = String(ARG.CF_STRICT_ACCESS_MODE || "on").trim().toLowerCase();
 const ON_FAIL_STRATEGY = String(ARG.CF_ON_FAIL_STRATEGY || "keep_current").trim().toLowerCase();
 const ACCESS_CHECK_PATHS_RAW = String(ARG.CF_ACCESS_CHECK_PATHS || "/cdn-cgi/trace").trim();
@@ -592,15 +593,16 @@ function buildMappingSuggestion(mappings) {
     }));
 }
 
-function formatRoundRobinHostLine(domainName, ips) {
-    const cleanedIps = uniqueIPv4List(ips);
+function formatHostLine(domainName, ips) {
+    const cleanedIps = uniqueIPv4List(ips).slice(0, ROUND_ROBIN_LIMIT);
     if (!cleanedIps.length) return "";
-    return `${domainName} = ${cleanedIps.join(", ")}, use-in-proxy=true`;
+    const selectedIps = HOSTMAP_OUTPUT_MODE === "round_robin" ? cleanedIps : cleanedIps.slice(0, 1);
+    return `${domainName} = ${selectedIps.join(", ")}, use-in-proxy=true`;
 }
 
 function buildPluginSnippet(hostEntries) {
     const lines = hostEntries
-        .map(item => formatRoundRobinHostLine(item.domain, item.ips))
+        .map(item => formatHostLine(item.domain, item.ips))
         .filter(Boolean);
     return [
         "[Host]",
@@ -611,7 +613,7 @@ function buildPluginSnippet(hostEntries) {
 
 function buildHostSnippet(hostEntries) {
     return hostEntries
-        .map(item => formatRoundRobinHostLine(item.domain, item.ips))
+        .map(item => formatHostLine(item.domain, item.ips))
         .filter(Boolean)
         .join("\n");
 }
@@ -619,7 +621,7 @@ function buildHostSnippet(hostEntries) {
 function buildGeneratedPlugin(hostEntries) {
     const generatedAt = new Date().toISOString();
     const hostLines = hostEntries
-        .map(item => formatRoundRobinHostLine(item.domain, item.ips))
+        .map(item => formatHostLine(item.domain, item.ips))
         .filter(Boolean)
         .join("\n");
     return [
@@ -1102,7 +1104,9 @@ async function main() {
             access_policy: {
                 strict_mode: strictAccess,
                 on_fail_strategy: onFailStrategy,
-                access_check_paths: normalizeAccessCheckPaths(ACCESS_CHECK_PATHS_RAW)
+                access_check_paths: normalizeAccessCheckPaths(ACCESS_CHECK_PATHS_RAW),
+                hostmap_output_mode: HOSTMAP_OUTPUT_MODE,
+                round_robin_limit: ROUND_ROBIN_LIMIT
             },
             cloud_seed_count: remoteIps.length,
             target_dns_cf_count: targetDnsIps.length,
