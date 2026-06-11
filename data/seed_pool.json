@@ -41,8 +41,8 @@
     "104.16.5.189",
     "104.16.2.189",
     "104.16.4.189",
-    "104.16.6.189",
     "104.16.3.189",
+    "104.16.6.189",
     "104.16.197.131",
     "104.16.196.131",
     "104.20.28.74",
@@ -65,7 +65,7 @@
     "104.18.228.35",
     "104.21.91.19"
   ],
-  "updated_at": 1781153897,
+  "updated_at": 1781194809,
   "source": "github-actions",
   "strategies": [
     "dns",
@@ -83,19 +83,19 @@
       {
         "name": "dns",
         "ips": 19,
-        "elapsed_ms": 344,
+        "elapsed_ms": 184,
         "error": null
       },
       {
         "name": "itdog_location_成都_电信",
         "ips": 19,
-        "elapsed_ms": 10977,
+        "elapsed_ms": 12619,
         "error": null
       },
       {
         "name": "public_repo",
         "ips": 15,
-        "elapsed_ms": 760,
+        "elapsed_ms": 128,
         "error": null
       }
     ]
